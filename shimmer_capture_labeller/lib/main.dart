@@ -1,7 +1,7 @@
+import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter_blue_classic/flutter_blue_classic.dart';
-import 'dart:async';
 
 import 'package:shimmer_capture_labeller/device_info.dart';
 import 'tools/logging.dart';
@@ -38,7 +38,7 @@ class StartPage extends StatefulWidget {
 }
 
 class _StartPageState extends State<StartPage> {
-  final _blueClassic = FlutterBlueClassic();
+  final _blueClassic = FlutterBlueClassic(usesFineLocation: false);
 
   BluetoothAdapterState _adapterState = BluetoothAdapterState.unknown;
   StreamSubscription? _adapterStateSubscription;
@@ -71,7 +71,7 @@ class _StartPageState extends State<StartPage> {
         if (mounted) setState(() => _isScanning = isScanning);
       });
     } catch (e) {
-      debugPrint("Failed to initialize Bluetooth library");
+      debugPrint("Failed to initialize Bluetooth library: $e");
     }
 
     if (!mounted) return;

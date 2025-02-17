@@ -4,6 +4,9 @@ import 'dart:convert';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_blue_classic/flutter_blue_classic.dart';
+import 'tools/logging.dart';
+
+DebugPrintCallback debugPrint = customDebugPrint("DeviceInfo", true);
 
 class DeviceInfo extends StatefulWidget {
   const DeviceInfo({super.key, required this.connection});
@@ -48,7 +51,7 @@ class _DeviceInfoState extends State<DeviceInfo> {
                 try {
                   widget.connection.writeString("hello world");
                 } catch (e) {
-                  if (kDebugMode) print(e);
+                  debugPrint("Failed to write to device: $e");
                   ScaffoldMessenger.maybeOf(context)?.showSnackBar(SnackBar(
                       content: Text(
                           "Error sending to device. Device is ${widget.connection.isConnected ? "connected" : "not connected"}")));
