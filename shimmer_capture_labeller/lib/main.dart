@@ -3,7 +3,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter_blue_classic/flutter_blue_classic.dart';
 
-import 'package:shimmer_capture_labeller/device_info.dart';
+import 'package:shimmer_capture_labeller/device_screen.dart';
 import 'tools/logging.dart';
 
 DebugPrintCallback debugPrint = customDebugPrint("Main", true);
@@ -111,37 +111,18 @@ class _StartPageState extends State<StartPage> {
           if (scanResults.isEmpty)
             const Center(child: Text("No devices found yet"))
           else
-            for (var (index, device) in scanResults.indexed)
+            for (var device in scanResults
+                .where((elem) => elem.bondState == BluetoothBondState.bonded))
               ListTile(
                 title: Text("${device.name ?? "???"} (${device.address})"),
                 subtitle: Text(
                     "Paired: ${device.bondState.name}, Type: ${device.type.name}"),
-                trailing: index == _connectingToIndex
-                    ? const CircularProgressIndicator()
-                    : Text("${device.rssi} dBm"),
+                trailing: Text("${device.rssi} dBm"),
                 onTap: () async {
-                  BluetoothConnection? connection;
-                  setState(() => _connectingToIndex = index);
-                  try {
-                    connection = await _blueClassic.connect(device.address);
-                    if (!this.context.mounted) return;
-                    if (connection != null && connection.isConnected) {
-                      if (mounted) setState(() => _connectingToIndex = null);
-                      Navigator.push(
-                          context,
-                          MaterialPageRoute(
-                              builder: (context) =>
-                                  DeviceInfo(connection: connection!)));
-                    }
-                  } catch (e) {
-                    if (mounted) setState(() => _connectingToIndex = null);
-                    debugPrint(
-                        "Failed to connect to ${device.name}@${device.address}");
-                    connection?.dispose();
-                    ScaffoldMessenger.maybeOf(context)?.showSnackBar(
-                        const SnackBar(
-                            content: Text("Error connecting to device")));
-                  }
+                  Navigator.push(
+                      context,
+                      MaterialPageRoute(
+                          builder: (context) => DeviceScreen(device: device)));
                 },
               )
         ],

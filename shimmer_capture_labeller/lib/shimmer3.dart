@@ -64,7 +64,7 @@ class Shimmer3 {
   bool _streaming = false;
 
   StreamSubscription? _readSubscription;
-  List<Shimmer3Event> receivedEvents = <Shimmer3Event>[];
+  List<Shimmer3Event> receivedEvents = [];
   final ackRef = Commands.acknowledge;
   final ackTimeout = 10;
 
@@ -124,6 +124,7 @@ class Shimmer3 {
   }
 
   Future<bool> sendCommand(String description, Uint8List payload) async {
+    debugPrint("TX $description: $payload");
     if (!(await sendData(payload))) {
       debugPrint("Failed to $description: data not sent");
       return false;
