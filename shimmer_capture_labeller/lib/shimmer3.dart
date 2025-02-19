@@ -40,8 +40,8 @@ class Shimmer3Event {
   final DateTime datetime;
   final Uint8List message;
 
-  Shimmer3Event(this.datetime, this.message);
-  Shimmer3Event.fromMilliseconds(int timestamp, this.message)
+  Shimmer3Event(this.message, {DateTime? datetime}) : datetime = DateTime.now();
+  Shimmer3Event.fromMilliseconds(this.message, int timestamp)
       : datetime = DateTime.fromMillisecondsSinceEpoch(timestamp);
 
   @override
@@ -59,17 +59,23 @@ class Shimmer3Event {
 class Shimmer3 {
   final BluetoothDevice device;
   late FlutterBlueClassic _blueClassic;
+  late StreamController<Shimmer3Event> _controller;
   BluetoothConnection? _connection;
+  bool _streaming = false;
 
   StreamSubscription? _readSubscription;
   List<Shimmer3Event> receivedEvents = <Shimmer3Event>[];
+  final ackRef = Commands.acknowledge;
   final ackTimeout = 10;
 
   Shimmer3(this.device) {
     _blueClassic = FlutterBlueClassic(usesFineLocation: false);
+    _controller = StreamController<Shimmer3Event>.broadcast();
   }
 
   bool get isConnected => _connection?.isConnected ?? false;
+  bool get isStreaming => _streaming;
+  Stream<Shimmer3Event> get stream => _controller.stream;
 
   Future<bool> connect() async {
     if (isConnected) {
@@ -81,8 +87,19 @@ class Shimmer3 {
       return false;
     }
     _connection = conn;
-    _readSubscription = _connection!.input?.listen((uBuffer) =>
-        receivedEvents.add(Shimmer3Event(DateTime.now(), uBuffer)));
+    _readSubscription = _connection!.input?.listen((buffer) {
+      if (buffer.isEmpty) {
+        return;
+      }
+      var event = Shimmer3Event(buffer);
+      debugPrint("Packet received: $event");
+      if (buffer.length == 1 && buffer.single.toInt() == ackRef.value) {
+        receivedEvents.add(event);
+        return;
+      }
+      // Stream out the event
+      _controller.add(event);
+    });
     return true;
   }
 
@@ -131,7 +148,7 @@ class Shimmer3 {
         continue;
       }
       for (final (idx, event) in receivedEvents.indexed) {
-        if (event.message == Commands.acknowledge.asUint8List()) {
+        if (event.message == ackRef.asUint8List()) {
           acknowledged = true;
           receivedEvents.removeAt(idx);
           break;
@@ -145,6 +162,7 @@ class Shimmer3 {
     return _commMutex.protect<bool>(() async {
       int command, byte0, byte1, byte2;
       flushQueue();
+      stopStreaming();
 
       // Set up sensors
       int configuration = 0;
@@ -180,6 +198,7 @@ class Shimmer3 {
         return false;
       }
 
+      flushQueue();
       return true;
     });
   }
@@ -190,6 +209,7 @@ class Shimmer3 {
       if (!(await sendCommand("starting streaming", payload))) {
         return false;
       }
+      _streaming = true;
       return true;
     });
   }
@@ -200,6 +220,7 @@ class Shimmer3 {
       if (!(await sendCommand("stopping streaming", payload))) {
         return false;
       }
+      _streaming = false;
       return true;
     });
   }
