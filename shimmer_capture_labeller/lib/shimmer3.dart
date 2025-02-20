@@ -23,39 +23,64 @@ enum Commands {
 }
 
 enum Sensors {
-  analogAccel(23, 6),
-  mpuGyro(22, 6),
-  lsmMagnetometer(21, 6),
-  gsr(18, 2),
-  battery(13, 1),
-  lsmAccel(12, 6),
-  ppg(8, 2),
-  mpuAccel(6, 6),
-  mpuMagnetometer(5, 6),
-  pressureTemp(2, 4);
+  analogAccel(23, 6, true),
+  mpuGyro(22, 6, false),
+  lsmMagnetometer(21, 6, false),
+  gsr(18, 2, true),
+  battery(13, 2, true),
+  lsmAccel(12, 6, false),
+  ppg(8, 2, true),
+  mpuAccel(6, 6, false),
+  mpuMagnetometer(5, 6, false),
+  pressureTemp(2, 5, false);
 
   final int bitShift;
   final int packetLength;
-  const Sensors(this.bitShift, this.packetLength);
+  final bool isLittleEndian;
+  const Sensors(this.bitShift, this.packetLength, this.isLittleEndian);
+  @override
+  String toString() => name;
 }
 
 class Shimmer3DataPacket {
   final Set<Sensors> enabledSensors;
-  final Uint8List? data;
+  final Uint8List data;
+  late DateTime dateTime;
   static const int packetType = 0x00;
   static const int packetTypeLength = 1;
   static const int timestampLength = 3;
 
-  Shimmer3DataPacket(this.enabledSensors, {Uint8List? data}) {
-    if (data != null) {
-      return Shimmer3DataPacket.parse(enabledSensors, data);
-    }
+  Shimmer3DataPacket(this.enabledSensors, this.data) {
+    dateTime = parseDataTimestamp(data[1], data[2], data[3]);
+  }
+
+  static DateTime parseDataTimestamp(int byte0, int byte1, int byte2) {
+    var ts = byte0 + (byte1 * 256) + (byte2 * 65536);
+    return DateTime.fromMillisecondsSinceEpoch(ts * 1000);
   }
 
   static Shimmer3DataPacket parse(Set<Sensors> enabledSensors, Uint8List data) {
+    if (enabledSensors.isEmpty) {
+      throw ArgumentError("Enable at least one sensor");
+    }
+    var validLength = packetTypeLength + timestampLength;
+    for (var sensor in enabledSensors) {
+      validLength += sensor.packetLength;
+    }
+    if (data.length != validLength) {
+      throw ArgumentError(
+          "Provided data packet length (${data.length}) does not match with enabled sensors: $enabledSensors");
+    }
+    if (data[0] != packetType) {
+      throw ArgumentError(
+          "Data packet's packet type (${data[0]}) does not match DataPacket($packetType)");
+    }
+    var timestamp = data[1] + (data[2] * 256) + (data[2] * 65536);
+    return Shimmer3DataPacket(enabledSensors, data);
   }
 
-  static Shimmer3DataPacket? tryParse(Set<Sensors> enabledSensors, Uint8List data) {
+  static Shimmer3DataPacket? tryParse(
+      Set<Sensors> enabledSensors, Uint8List data) {
     try {
       return parse(enabledSensors, data);
     } catch (_) {
@@ -64,8 +89,13 @@ class Shimmer3DataPacket {
   }
 
   @override
-  // TODO: implement hashCode
-  int get hashCode => super.hashCode;
+  int get hashCode => Object.hash(enabledSensors, data);
+  @override
+  bool operator ==(covariant Shimmer3DataPacket other) {
+    if (identical(this, other)) return true;
+    return setEquals(enabledSensors, other.enabledSensors) &&
+        listEquals(data, other.data);
+  }
 }
 
 class Shimmer3Event {
