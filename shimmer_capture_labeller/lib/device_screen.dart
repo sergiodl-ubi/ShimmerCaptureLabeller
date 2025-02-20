@@ -53,28 +53,34 @@ class _DeviceScreenState extends State<DeviceScreen> {
     });
   }
 
-  Future<void> initializeStream() async {
+  Future<bool> initializeStream() async {
     var enabledSensors = [
       Sensors.analogAccel,
       Sensors.mpuGyro,
       Sensors.gsr,
       Sensors.ppg
     ];
-    if (!(await globals.shimmer3!.initialize(enabledSensors))) {
+    var initialized = await globals.shimmer3!.initialize(enabledSensors);
+    if (!initialized) {
       _showSnackBar("Error starting capture stream");
     }
+    return initialized;
   }
 
-  Future<void> startStream() async {
-    if (!(await globals.shimmer3!.startStreaming())) {
+  Future<bool> startStream() async {
+    var started = await globals.shimmer3!.startStreaming();
+    if (!started) {
       _showSnackBar("Error starting capture stream");
     }
+    return started;
   }
 
-  Future<void> stopStream() async {
-    if (!(await globals.shimmer3!.stopStreaming())) {
+  Future<bool> stopStream() async {
+    var stopped = await globals.shimmer3!.stopStreaming();
+    if (!stopped) {
       _showSnackBar("Error stopping capture stream");
     }
+    return stopped;
   }
 
   @override
@@ -103,8 +109,10 @@ class _DeviceScreenState extends State<DeviceScreen> {
           ElevatedButton(
             onPressed: successfulSetup
                 ? () async {
-                    await initializeStream();
-                    await startStream();
+                    var initialized = await initializeStream();
+                    if (initialized) {
+                      await startStream();
+                    }
                   }
                 : null,
             child: Text("Start Capture"),

@@ -47,7 +47,6 @@ class _StartPageState extends State<StartPage> {
   StreamSubscription? _scanSubscription;
 
   bool _isScanning = false;
-  int? _connectingToIndex;
   StreamSubscription? _scanningStateSubscription;
 
   @override

@@ -18,6 +18,8 @@ enum Commands {
   final int value;
   const Commands(this.value);
   Uint8List asUint8List() => Uint8List.fromList([value]);
+  bool sameAsMessage(Uint8List msg) =>
+      msg.length == 1 && msg.single.toInt() == value;
 }
 
 enum Sensors {
@@ -65,7 +67,6 @@ class Shimmer3 {
 
   StreamSubscription? _readSubscription;
   List<Shimmer3Event> receivedEvents = [];
-  final ackRef = Commands.acknowledge;
   final ackTimeout = 10;
 
   Shimmer3(this.device) {
@@ -93,7 +94,7 @@ class Shimmer3 {
       }
       var event = Shimmer3Event(buffer);
       debugPrint("Packet received: $event");
-      if (buffer.length == 1 && buffer.single.toInt() == ackRef.value) {
+      if (Commands.acknowledge.sameAsMessage(buffer)) {
         receivedEvents.add(event);
         return;
       }
@@ -112,8 +113,13 @@ class Shimmer3 {
     if (!(await connect())) {
       return false;
     }
-    var output = String.fromCharCodes(data);
-    _connection!.writeString(output);
+    try {
+      _connection!.output.add(data);
+      await _connection!.output.allSent;
+    } catch (err) {
+      debugPrint("Failed to send data ($data): ${err.toString()}");
+      return false;
+    }
     return true;
   }
 
@@ -129,32 +135,35 @@ class Shimmer3 {
       debugPrint("Failed to $description: data not sent");
       return false;
     }
-    if (!(await waitForAck(timeout: ackTimeout))) {
+    if (!(await waitForAck(timeout: ackTimeout, reference: description))) {
       debugPrint("Failed to $description: ack timeout");
       return false;
     }
     return true;
   }
 
-  Future<bool> waitForAck({timeout = 10}) async {
+  Future<bool> waitForAck({timeout = 10, reference = ""}) async {
     var acknowledged = false;
-    var expirationTime =
-        DateTime.now().millisecondsSinceEpoch + (timeout * 1000);
-    while (!acknowledged) {
-      if (DateTime.now().millisecondsSinceEpoch > expirationTime) {
-        break;
-      }
+    var now = DateTime.now().millisecondsSinceEpoch;
+    var expirationTime = now + (timeout * 1000);
+    while (!acknowledged && !(now > expirationTime)) {
       if (receivedEvents.isEmpty) {
         await Future.delayed(Duration(milliseconds: 50));
+        now = DateTime.now().millisecondsSinceEpoch;
         continue;
       }
       for (final (idx, event) in receivedEvents.indexed) {
-        if (event.message == ackRef.asUint8List()) {
+        if (Commands.acknowledge.sameAsMessage(event.message)) {
           acknowledged = true;
           receivedEvents.removeAt(idx);
+          if (reference.isNotEmpty) {
+            debugPrint("Ack received for: $reference");
+          }
           break;
         }
       }
+      await Future.delayed(Duration(milliseconds: 50));
+      now = DateTime.now().millisecondsSinceEpoch;
     }
     return acknowledged;
   }
@@ -190,7 +199,7 @@ class Shimmer3 {
 
       // Set sampling rate
       command = Commands.setSamplingRate.value;
-      int clockWait = ((1 << 15) / sampleRate).round();
+      int clockWait = ((1 << 15) / sampleRate).toInt();
       byte0 = (clockWait & 0x00ff);
       byte1 = (clockWait & 0xff00) >> 8;
       payload = Uint8List.fromList([command, byte0, byte1]);
@@ -206,7 +215,7 @@ class Shimmer3 {
 
   Future<bool> startStreaming() async {
     return _commMutex.protect<bool>(() async {
-      var payload = Uint8List.fromList([Commands.startStreaming.value]);
+      var payload = Commands.startStreaming.asUint8List();
       if (!(await sendCommand("starting streaming", payload))) {
         return false;
       }
@@ -217,7 +226,7 @@ class Shimmer3 {
 
   Future<bool> stopStreaming() async {
     return _commMutex.protect<bool>(() async {
-      var payload = Uint8List.fromList([Commands.stopStreaming.value]);
+      var payload = Commands.stopStreaming.asUint8List();
       if (!(await sendCommand("stopping streaming", payload))) {
         return false;
       }
