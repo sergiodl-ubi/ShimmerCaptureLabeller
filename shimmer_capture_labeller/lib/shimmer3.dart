@@ -23,19 +23,49 @@ enum Commands {
 }
 
 enum Sensors {
-  analogAccel(23),
-  mpuGyro(22),
-  lsmMagnetometer(21),
-  gsr(18),
-  battery(13),
-  lsmAccel(12),
-  ppg(8),
-  mpuAccel(6),
-  mpuMagnetometer(5),
-  pressureTemp(2);
+  analogAccel(23, 6),
+  mpuGyro(22, 6),
+  lsmMagnetometer(21, 6),
+  gsr(18, 2),
+  battery(13, 1),
+  lsmAccel(12, 6),
+  ppg(8, 2),
+  mpuAccel(6, 6),
+  mpuMagnetometer(5, 6),
+  pressureTemp(2, 4);
 
   final int bitShift;
-  const Sensors(this.bitShift);
+  final int packetLength;
+  const Sensors(this.bitShift, this.packetLength);
+}
+
+class Shimmer3DataPacket {
+  final Set<Sensors> enabledSensors;
+  final Uint8List? data;
+  static const int packetType = 0x00;
+  static const int packetTypeLength = 1;
+  static const int timestampLength = 3;
+
+  Shimmer3DataPacket(this.enabledSensors, {Uint8List? data}) {
+    if (data != null) {
+      return Shimmer3DataPacket.parse(enabledSensors, data);
+    }
+  }
+
+  static Shimmer3DataPacket parse(Set<Sensors> enabledSensors, Uint8List data) {
+  }
+
+  static Shimmer3DataPacket? tryParse(Set<Sensors> enabledSensors, Uint8List data) {
+    try {
+      return parse(enabledSensors, data);
+    } catch (_) {
+      return null;
+    }
+  }
+
+  @override
+  // TODO: implement hashCode
+  int get hashCode => super.hashCode;
 }
 
 class Shimmer3Event {
