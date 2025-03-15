@@ -3,44 +3,10 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter_blue_classic/flutter_blue_classic.dart';
 import 'package:mutex/mutex.dart';
 import 'tools/logging.dart';
+import 'Shimmer3Constants.dart';
 
 DebugPrintCallback debugPrint = customDebugPrint("Shimmer3", true);
 Mutex _commMutex = Mutex();
-
-enum Commands {
-  initSensors(0x08),
-  setSamplingRate(0x05),
-  startStreaming(0x07),
-  stopStreaming(0x20),
-  enableExpIntPower(0x5e),
-  acknowledge(0xFF);
-
-  final int value;
-  const Commands(this.value);
-  Uint8List asUint8List() => Uint8List.fromList([value]);
-  bool sameAsMessage(Uint8List msg) =>
-      msg.length == 1 && msg.single.toInt() == value;
-}
-
-enum Sensors {
-  analogAccel(23, 6, true),
-  mpuGyro(22, 6, false),
-  lsmMagnetometer(21, 6, false),
-  gsr(18, 2, true),
-  battery(13, 2, true),
-  lsmAccel(12, 6, false),
-  ppg(8, 2, true),
-  mpuAccel(6, 6, false),
-  mpuMagnetometer(5, 6, false),
-  pressureTemp(2, 5, false);
-
-  final int bitShift;
-  final int packetLength;
-  final bool isLittleEndian;
-  const Sensors(this.bitShift, this.packetLength, this.isLittleEndian);
-  @override
-  String toString() => name;
-}
 
 class Shimmer3DataPacket {
   final Set<Sensors> enabledSensors;
@@ -154,7 +120,7 @@ class Shimmer3 {
       }
       var event = Shimmer3Event(buffer);
       debugPrint("Packet received: $event");
-      if (Commands.acknowledge.sameAsMessage(buffer)) {
+      if (MessageCodes.acknowledge.sameAsMessage(buffer)) {
         receivedEvents.add(event);
         return;
       }
@@ -213,7 +179,7 @@ class Shimmer3 {
         continue;
       }
       for (final (idx, event) in receivedEvents.indexed) {
-        if (Commands.acknowledge.sameAsMessage(event.message)) {
+        if (MessageCodes.acknowledge.sameAsMessage(event.message)) {
           acknowledged = true;
           receivedEvents.removeAt(idx);
           if (reference.isNotEmpty) {
@@ -237,9 +203,9 @@ class Shimmer3 {
       // Set up sensors
       int configuration = 0;
       for (var sensor in sensors) {
-        configuration += 1 << sensor.bitShift;
+        configuration += 1 << sensor.enableBitShift;
       }
-      command = Commands.initSensors.value;
+      command = MessageCodes.initSensors.value;
       byte0 = (configuration & 0x00ff0000) >> 16;
       byte1 = (configuration & 0x0000ff00) >> 8;
       byte2 = (configuration & 0x000000ff);
@@ -250,7 +216,7 @@ class Shimmer3 {
       }
 
       // Enable expansion board internal power
-      command = Commands.enableExpIntPower.value;
+      command = MessageCodes.enableExpIntPower.value;
       payload = Uint8List.fromList([command, 1]);
 
       if (!(await sendCommand("enable expansion board power", payload))) {
@@ -258,7 +224,7 @@ class Shimmer3 {
       }
 
       // Set sampling rate
-      command = Commands.setSamplingRate.value;
+      command = MessageCodes.setSamplingRate.value;
       int clockWait = ((1 << 15) / sampleRate).toInt();
       byte0 = (clockWait & 0x00ff);
       byte1 = (clockWait & 0xff00) >> 8;
@@ -275,7 +241,7 @@ class Shimmer3 {
 
   Future<bool> startStreaming() async {
     return _commMutex.protect<bool>(() async {
-      var payload = Commands.startStreaming.asUint8List();
+      var payload = MessageCodes.startStreaming.asUint8List();
       if (!(await sendCommand("starting streaming", payload))) {
         return false;
       }
@@ -286,7 +252,7 @@ class Shimmer3 {
 
   Future<bool> stopStreaming() async {
     return _commMutex.protect<bool>(() async {
-      var payload = Commands.stopStreaming.asUint8List();
+      var payload = MessageCodes.stopStreaming.asUint8List();
       if (!(await sendCommand("stopping streaming", payload))) {
         return false;
       }

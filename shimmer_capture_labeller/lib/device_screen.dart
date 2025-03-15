@@ -55,7 +55,7 @@ class _DeviceScreenState extends State<DeviceScreen> {
 
   Future<bool> initializeStream() async {
     var enabledSensors = [
-      Sensors.analogAccel,
+      Sensors.lowNoiseAccel,
       Sensors.mpuGyro,
       Sensors.gsr,
       Sensors.ppg
