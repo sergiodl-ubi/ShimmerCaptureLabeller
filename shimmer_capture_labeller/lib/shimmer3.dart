@@ -3,7 +3,7 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter_blue_classic/flutter_blue_classic.dart';
 import 'package:mutex/mutex.dart';
 import 'tools/logging.dart';
-import 'Shimmer3Constants.dart';
+import 'Shimmer3Definitions.dart';
 
 DebugPrintCallback debugPrint = customDebugPrint("Shimmer3", true);
 Mutex _commMutex = Mutex();
