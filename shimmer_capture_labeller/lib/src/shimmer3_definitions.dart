@@ -1,4 +1,5 @@
 import 'package:flutter/foundation.dart';
+import 'package:vector_math/vector_math.dart';
 
 // ########### Shimmer3 BT Protocol ##########
 
@@ -170,7 +171,8 @@ enum MessageCodes {
   getBluetoothVersionString(0xA1),
   bluetoothVersionString(0xA2),
 
-  acknowledged(0xFF);
+  acknowledged(0xFF),
+  ;
 
   final int value;
   const MessageCodes(this.value);
@@ -201,7 +203,8 @@ enum SignalTypes {
   u64l("Uint64", 8, Endian.little),
   u64b("Uint64", 8, Endian.big),
   i64l("int64", 8, Endian.little),
-  i64b("int64", 8, Endian.big);
+  i64b("int64", 8, Endian.big),
+  ;
 
   final String intType;
   final int byteSize;
@@ -252,18 +255,19 @@ enum Sensors {
     Signal("Z", SignalTypes.i16l, byteID: 0x09),
   ]),
   gsr(18, [
-    Signal("GSR", SignalTypes.u16l, byteID: 0x1c),
+    Signal("ADC", SignalTypes.u16l, byteID: 0x1c),
   ]),
   battery(13, [
-    Signal("Voltage", SignalTypes.u12l, byteID: 0x03),
+    Signal("ADC", SignalTypes.u12l, byteID: 0x03),
   ]),
   ppg(8, [
-    Signal("PPG", SignalTypes.u12l, byteID: 0x12),
+    Signal("ADC", SignalTypes.u12l, byteID: 0x12),
   ]),
   pressureTemp(2, [
     Signal("Temp", SignalTypes.u16b, byteID: 0x1a),
     Signal("Press", SignalTypes.u24b, byteID: 0x1b),
-  ]);
+  ]),
+  ;
 
   final int enableBitShift;
   final List<Signal> signals;
@@ -289,8 +293,256 @@ enum ExpansionBoards {
   exgUnified(0x2F),
   gsrUnified(0x30),
   bridgeAmpUnified(0x31),
-  shimmer3EXGExtended(0x3B);
+  shimmer3EXGExtended(0x3B),
+  ;
 
   final int id;
   const ExpansionBoards(this.id);
 }
+
+// ########### Sensors default calibration values ##########
+
+class IMUCalibrationData {
+  final List<double> _offset;
+  final List<double> _sensitivity;
+  final List<double> _alignment;
+  const IMUCalibrationData(List<double> offset3, List<double> sensitivity3x3,
+      List<double> alignment3x3)
+      : _offset = offset3,
+        _sensitivity = sensitivity3x3,
+        _alignment = alignment3x3;
+
+  Vector3 get offset => Vector3.array(_offset);
+  Matrix3 get sensitivity => Matrix3.fromList(_sensitivity);
+  Matrix3 get alignment => Matrix3.fromList(_alignment);
+}
+
+class BMP280CalibrationData {
+  final int t1, t2, t3;
+  final int p1, p2, p3, p4, p5, p6, p7, p8, p9;
+  const BMP280CalibrationData({
+    this.t1 = 27504,
+    this.t2 = 26435,
+    this.t3 = -1000,
+    this.p1 = 36477,
+    this.p2 = -10685,
+    this.p3 = 3024,
+    this.p4 = 2855,
+    this.p5 = 140,
+    this.p6 = -7,
+    this.p7 = 15500,
+    this.p8 = -14600,
+    this.p9 = 6000,
+  });
+}
+
+enum IMUDefaultCalibrations {
+  lowNoiseAccelKXRB52042(IMUCalibrationData(
+    [2047, 2047, 2047],
+    [83, 0, 0, 0, 83, 0, 0, 0, 83],
+    [0, -1, 0, -1, 0, 0, 0, 0, -1],
+  )),
+  lowNoiseAccelKXTC92050(IMUCalibrationData(
+    [2053, 2053, 2053],
+    [92, 0, 0, 0, 92, 0, 0, 0, 92],
+    [0, -1, 0, -1, 0, 0, 0, 0, -1],
+  )),
+  wideRangeAccelLSM303DLHC_2G(IMUCalibrationData(
+    [0, 0, 0],
+    [1631, 0, 0, 0, 1631, 0, 0, 0, 1631],
+    [-1, 0, 0, 0, 1, 0, 0, 0, -1],
+  )),
+  wideRangeAccelLSM303DLHC_4G(IMUCalibrationData(
+    [0, 0, 0],
+    [815, 0, 0, 0, 815, 0, 0, 0, 815],
+    [-1, 0, 0, 0, 1, 0, 0, 0, -1],
+  )),
+  wideRangeAccelLSM303DLHC_8G(IMUCalibrationData(
+    [0, 0, 0],
+    [408, 0, 0, 0, 408, 0, 0, 0, 408],
+    [-1, 0, 0, 0, 1, 0, 0, 0, -1],
+  )),
+  wideRangeAccelLSM303DLHC_16G(IMUCalibrationData(
+    [0, 0, 0],
+    [135, 0, 0, 0, 135, 0, 0, 0, 135],
+    [-1, 0, 0, 0, 1, 0, 0, 0, -1],
+  )),
+  wideRangeAccelLSM303AHTR_2G(IMUCalibrationData(
+    [0, 0, 0],
+    [1671, 0, 0, 0, 1671, 0, 0, 0, 1671],
+    [0, -1, 0, 1, 0, 0, 0, 0, -1],
+  )),
+  wideRangeAccelLSM303AHTR_4G(IMUCalibrationData(
+    [0, 0, 0],
+    [836, 0, 0, 0, 836, 0, 0, 0, 836],
+    [0, -1, 0, 1, 0, 0, 0, 0, -1],
+  )),
+  wideRangeAccelLSM303AHTR_8G(IMUCalibrationData(
+    [0, 0, 0],
+    [418, 0, 0, 0, 418, 0, 0, 0, 418],
+    [0, -1, 0, 1, 0, 0, 0, 0, -1],
+  )),
+  wideRangeAccelLSM303AHTR_16G(IMUCalibrationData(
+    [0, 0, 0],
+    [209, 0, 0, 0, 209, 0, 0, 0, 209],
+    [0, -1, 0, 1, 0, 0, 0, 0, -1],
+  )),
+  gyroscopeMPU910_250DPS(IMUCalibrationData(
+    [0, 0, 0],
+    [131, 0, 0, 0, 131, 0, 0, 0, 131],
+    [0, -1, 0, -1, 0, 0, 0, 0, -1],
+  )),
+  gyroscopeMPU910_500DPS(IMUCalibrationData(
+    [0, 0, 0],
+    [65.5, 0, 0, 0, 65.5, 0, 0, 0, 65.5],
+    [0, -1, 0, -1, 0, 0, 0, 0, -1],
+  )),
+  gyroscopeMPU910_1000DPS(IMUCalibrationData(
+    [0, 0, 0],
+    [32.8, 0, 0, 0, 32.8, 0, 0, 0, 32.8],
+    [0, -1, 0, -1, 0, 0, 0, 0, -1],
+  )),
+  gyroscopeMPU910_2000DPS(IMUCalibrationData(
+    [0, 0, 0],
+    [16.4, 0, 0, 0, 16.4, 0, 0, 0, 16.4],
+    [0, -1, 0, -1, 0, 0, 0, 0, -1],
+  )),
+  magnetometerLSM303DLHC_1_3Ga(IMUCalibrationData(
+    [0, 0, 0],
+    [1100, 0, 0, 0, 1100, 0, 0, 0, 1100],
+    [-1, 0, 0, 0, 1, 0, 0, 0, -1],
+  )),
+  magnetometerLSM303DLHC_1_9Ga(IMUCalibrationData(
+    [0, 0, 0],
+    [855, 0, 0, 0, 855, 0, 0, 0, 855],
+    [-1, 0, 0, 0, 1, 0, 0, 0, -1],
+  )),
+  magnetometerLSM303DLHC_2_5Ga(IMUCalibrationData(
+    [0, 0, 0],
+    [670, 0, 0, 0, 670, 0, 0, 0, 670],
+    [-1, 0, 0, 0, 1, 0, 0, 0, -1],
+  )),
+  magnetometerLSM303DLHC_4_0Ga(IMUCalibrationData(
+    [0, 0, 0],
+    [450, 0, 0, 0, 450, 0, 0, 0, 450],
+    [-1, 0, 0, 0, 1, 0, 0, 0, -1],
+  )),
+  magnetometerLSM303DLHC_4_7Ga(IMUCalibrationData(
+    [0, 0, 0],
+    [400, 0, 0, 0, 400, 0, 0, 0, 400], // Taken from LSM303DLHC datasheet
+    [-1, 0, 0, 0, 1, 0, 0, 0, -1],
+  )),
+  magnetometerLSM303DLHC_5_6Ga(IMUCalibrationData(
+    [0, 0, 0],
+    [330, 0, 0, 0, 330, 0, 0, 0, 330],
+    [-1, 0, 0, 0, 1, 0, 0, 0, -1],
+  )),
+  magnetometerLSM303DLHC_8_1Ga(IMUCalibrationData(
+    [0, 0, 0],
+    [230, 0, 0, 0, 230, 0, 0, 0, 230],
+    [-1, 0, 0, 0, 1, 0, 0, 0, -1],
+  )),
+  magnetometerLSM303AHTR_49Ga(IMUCalibrationData(
+    [0, 0, 0],
+    [667, 0, 0, 0, 667, 0, 0, 0, 667],
+    [0, -1, 0, 1, 0, 0, 0, 0, -1],
+  )),
+  ;
+
+  final IMUCalibrationData vectors;
+  const IMUDefaultCalibrations(this.vectors);
+}
+
+// ########### Sensors Parameters ##########
+
+// Units: Ohms, Default: 4 - Auto
+const Map<int, int> gsrRangeResistor = {
+  0: 40200,
+  1: 287000,
+  2: 1000000,
+  3: 3300000,
+};
+
+const Map<int, (double, double)> gsrResistanceRange = {
+  0: (8000, 63000),
+  1: (63000, 220000),
+  2: (220000, 680000),
+  3: (680000, 4700000),
+};
+
+// Units: bauds per second
+const Map<int, int> btBaudRate = {
+  0x00: 115200,
+  0x01: 1200,
+  0x02: 2400,
+  0x03: 4800,
+  0x04: 9600,
+  0x05: 19200,
+  0x06: 38400,
+  0x07: 57600,
+  0x08: 230400,
+  0x09: 460800,
+  0x0A: 921600,
+  0x0B: 1000000,
+};
+
+// Units: dps, Default: 0 - ±250dps
+const Map<int, int> mpu9X50GyroRange = {
+  0: 250,
+  1: 500,
+  2: 1000,
+  3: 20000,
+};
+
+// Default: 0 - Low pressure resolution
+const Map<int, String> bmpX80PressResolution = {
+  0: "Low",
+  1: "Standard",
+  2: "High",
+  3: "Very High",
+};
+
+// Units: Hz (with decimals for compatibility purposes with LSM303DLHC version)
+// Default: 3 - 100.0Hz
+const Map<int, double> lsm303AHTRMagDataRate = {
+  0: 10.0,
+  1: 20.0,
+  2: 50.0,
+  3: 100.0,
+};
+
+// Units: Ga
+const Map<int, double> lsm303AHTRMagRange = {
+  0: 49.152,
+};
+
+// Units: g, Default: 0 - ±2.0g
+const Map<int, double> lsm303AHTRAccelRange = {
+  0: 2.0,
+  1: 16.0,
+  2: 4.0,
+  3: 8.0,
+};
+
+// Default: 4 - 100.0Hz
+const Map<int, double> lsm303AHTRAccelDataRate = {
+  0x00: 0, // Off
+  0x01: 12.5,
+  0x02: 25.0,
+  0x03: 50.0,
+  0x04: 100.0,
+  0x05: 200.0,
+  0x06: 400.0,
+  0x07: 800.0,
+  0x08: 1600.0,
+  0x09: 3200.0,
+  0x0A: 6400.0,
+};
+
+// Value of the two most significant bits: (XX00 0000)
+const Map<int, String> chargingStatus = {
+  0x00: "Not Charging",
+  0x40: "Full Charge",
+  0x80: "Conditioning", // No idea what is conditioning, maybe "Charging"?
+  0xC0: "Bad Battery",
+};

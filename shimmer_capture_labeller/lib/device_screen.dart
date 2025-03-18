@@ -5,7 +5,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_blue_classic/flutter_blue_classic.dart';
 import 'tools/logging.dart';
 import 'tools/globals.dart' as globals;
-import 'shimmer3.dart';
+import 'src/shimmer3.dart';
 
 DebugPrintCallback debugPrint = customDebugPrint("DeviceScreen", true);
 

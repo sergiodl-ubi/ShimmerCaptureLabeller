@@ -2,8 +2,8 @@ import 'dart:async';
 import 'package:flutter/foundation.dart';
 import 'package:flutter_blue_classic/flutter_blue_classic.dart';
 import 'package:mutex/mutex.dart';
-import 'tools/logging.dart';
-import 'src/shimmer3_definitions.dart';
+import '../tools/logging.dart';
+import 'shimmer3_definitions.dart';
 import 'package:vector_math/vector_math.dart';
 
 /// True if sensitivity matrix is diagonal and alignment matrix follows:
@@ -76,7 +76,7 @@ class Shimmer3DataPacket {
 /// A collection of [Signal]'s data of one of Shimmer3's [Sensors].
 ///
 /// If provided, this implementation will store the `Uint8List` stream of bytes
-/// in [dataPacket] of a specified [sensorType] and it will automatically parse
+/// in [rawBytes] of a specified [sensorType] and it will automatically parse
 /// each of its defined [Signal]'s into their raw integer values.
 ///
 /// If calibration data is provided, each signal can be processed into their
@@ -84,48 +84,62 @@ class Shimmer3DataPacket {
 /// will be found in the [data] attribute;
 class SensorData {
   final Sensors sensorType;
-  late Uint8List dataPacket;
+  late Uint8List rawBytes;
   Map<String, int> rawData = {};
   Map<String, num> data = {};
 
-  SensorData(this.sensorType,
-      {Uint8List? dataPacket,
-      Vector3? offset,
-      Matrix3? sensitivity,
-      Matrix3? alignment}) {
+  SensorData(
+    this.sensorType, {
+    Uint8List? rawBytes,
+    Vector3? offset,
+    Matrix3? sensitivity,
+    Matrix3? alignment,
+    BMP280CalibrationData? bmp280Coefficients,
+  }) {
     var dataLoaded = false;
     var dataSize = sensorType.getPacketSize();
-    if (dataPacket == null) {
-      this.dataPacket = Uint8List(dataSize);
+    if (rawBytes == null) {
+      this.rawBytes = Uint8List(dataSize);
       for (var signal in sensorType.signals) {
         rawData[signal.name] = 0;
         data[signal.name] = 0;
       }
-    } else if (dataPacket.length == dataSize) {
-      this.dataPacket = dataPacket;
-      rawData = parsedDataPacket(dataPacket);
+    } else if (rawBytes.length == dataSize) {
+      this.rawBytes = rawBytes;
+      rawData = parsedDataPacket(rawBytes);
       dataLoaded = true;
     } else {
       throw Exception(
-          "$sensorType packet length (${dataPacket.length} is not the same as"
+          "$sensorType packet length (${rawBytes.length} is not the same as"
           " Sensor type ($sensorType) length (${sensorType.getPacketSize()})");
     }
 
     if (dataLoaded) {
       if (imuSensors.contains(sensorType)) {
+        // If all calibration vectors are given for a IMU Sensor type data
+        // the rawData will be automatically processed.
         if (offset != null && sensitivity != null && alignment != null) {
           data = calibratedData(rawData,
               offset: offset, sensitivity: sensitivity, alignment: alignment);
         } else if (offset != null || sensitivity != null || alignment != null) {
+          // If only one or two of them are set, an Exception is thrown
           throw Exception(
               "$sensorType loaded with incomplete calibration parameters: "
               "offset ($offset), sensitivity ($sensitivity), alignment ($alignment)");
         }
+        // If no calibration vectors are given, no calibration is done on rawData
+      } else if (sensorType == Sensors.pressureTemp) {
+        if (bmp280Coefficients != null) {
+          data =
+              calibratedData(rawData, bmp280Coefficients: bmp280Coefficients);
+        }
       } else {
+        // Any other type of data can be statically processed.
         data = calibratedData(rawData);
       }
     }
   }
+
   @override
   String toString() {
     var dataStrings = <String>[];
@@ -207,12 +221,17 @@ class SensorData {
     return calibratedData;
   }
 
-  Map<String, num> calibratedData(Map<String, int> rawData,
-      {Vector3? offset, Matrix3? sensitivity, Matrix3? alignment}) {
+  Map<String, num> calibratedData(
+    Map<String, int> rawData, {
+    Vector3? offset,
+    Matrix3? sensitivity,
+    Matrix3? alignment,
+    BMP280CalibrationData? bmp280Coefficients,
+  }) {
     Map<String, num> calibratedData = {};
     switch (sensorType) {
       case Sensors.dataTimestamp:
-        calibratedData["Timestamp"] = rawData["Timestamp"] ?? 0;
+        calibratedData["Timestamp"] = (rawData["Timestamp"] ?? 0) / 1000;
         break;
       case Sensors.lowNoiseAccel:
       case Sensors.wideRangeAccel:
@@ -223,19 +242,73 @@ class SensorData {
           (rawData["Y"] ?? 0).toDouble(),
           (rawData["Z"] ?? 0).toDouble(),
         );
-        var result =
+        var calibrated =
             calibratedIMUData(rawDataVector, offset!, sensitivity!, alignment!);
-        calibratedData["X"] = result.x;
-        calibratedData["Y"] = result.y;
-        calibratedData["Z"] = result.z;
+        calibratedData["X"] = calibrated.x;
+        calibratedData["Y"] = calibrated.y;
+        calibratedData["Z"] = calibrated.z;
         break;
       case Sensors.gsr:
+        const range3RawLowerLimit = 683;
+        int rawValue = rawData["ADC"] ?? 0;
+        var rangeResistorID = (rawValue & 0xC000) >> 14;
+        var rangeResistor = gsrRangeResistor[rangeResistorID]!;
+        var (minR, maxR) = gsrResistanceRange[rangeResistorID]!;
+        int adcValue = rawValue & 0x0FFF;
+        if (adcValue <= 0) {
+          calibratedData["GSRResistance_kOhms"] = 0;
+          calibratedData["GSRConductance_uS"] = 0;
+          break;
+        }
+        if (rangeResistorID == 3 && adcValue < range3RawLowerLimit) {
+          adcValue = range3RawLowerLimit;
+        }
+        var resistance = rangeResistor / (((adcValue * (3 / 4095)) / 0.5) - 1);
+        if (resistance > maxR) {
+          resistance = maxR;
+        } else if (resistance < minR) {
+          resistance = minR;
+        }
+        calibratedData["GSRResistance_kOhms"] = resistance / 1000;
+        calibratedData["GSRConductance_uS"] = 1 / resistance;
         break;
       case Sensors.battery:
+        const deviceVoltageDropFactor = 1.988;
+        int adcValue = rawData["ADC"] ?? 0;
+        var voltage = (adcValue * 3 / 4095) * deviceVoltageDropFactor;
+        calibratedData["Battery_V"] = voltage;
         break;
       case Sensors.ppg:
+        int adcValue = rawData["ADC"] ?? 0;
+        var voltage = (adcValue * 3000 / 4095);
+        calibratedData["PPG_mV"] = voltage;
         break;
       case Sensors.pressureTemp:
+        var rawTemp = rawData["Temp"] ?? 0;
+        var rawPress = (rawData["Press"] ?? 0) >> 4;
+
+        var coeff = bmp280Coefficients!;
+        var centeredTemp = rawTemp - coeff.p1;
+        var x1 = centeredTemp * coeff.p2 >> 10;
+        var x2 = ((centeredTemp * centeredTemp) >> 12) * coeff.p3 >> 14;
+        var tempFine = x1 + x2;
+        calibratedData["Temp_C"] = ((tempFine * 5 + 128) >> 8) / 100;
+
+        var press = 0;
+        var var1 = tempFine - 128000;
+        var var2 = var1 * var1 * coeff.p6;
+        var2 = var2 + ((var1 * coeff.p5) << 17);
+        var2 = var2 + (coeff.p4 << 35);
+        var1 = ((var1 * var1 * coeff.p3) >> 8) + ((var1 * coeff.p2) << 12);
+        var1 = (((1 << 47) + var1)) * coeff.p1 >> 33;
+        if (var1 != 0) {
+          press = 1048576 - rawPress;
+          press = ((((press << 31) - var2) * 3125) / var1).toInt();
+          var1 = (coeff.p9 * (press >> 13) * (press >> 13)) >> 25;
+          var2 = (coeff.p8 * press) >> 19;
+          press = ((press + var1 + var2) >> 8) + (coeff.p7 << 4);
+        }
+        calibratedData["Press_Pa"] = press / 256;
         break;
     }
     return calibratedData;
