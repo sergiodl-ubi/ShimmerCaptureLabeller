@@ -3,7 +3,16 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter_blue_classic/flutter_blue_classic.dart';
 import 'package:mutex/mutex.dart';
 import 'tools/logging.dart';
-import 'Shimmer3Definitions.dart';
+import 'src/shimmer3_definitions.dart';
+import 'package:vector_math/vector_math.dart';
+
+/// True if sensitivity matrix is diagonal and alignment matrix follows:
+/// [  0, -1,  0 ]
+/// [ s1,  0,  0 ]  "s" represents a positive or negative sign
+/// [  0,  0, -1 ]
+///
+/// This is true for Shimmer3 GSR+ default calibration values
+const optimizedCalibration = true;
 
 DebugPrintCallback debugPrint = customDebugPrint("Shimmer3", true);
 Mutex _commMutex = Mutex();
@@ -61,6 +70,175 @@ class Shimmer3DataPacket {
     if (identical(this, other)) return true;
     return setEquals(enabledSensors, other.enabledSensors) &&
         listEquals(data, other.data);
+  }
+}
+
+/// A collection of [Signal]'s data of one of Shimmer3's [Sensors].
+///
+/// If provided, this implementation will store the `Uint8List` stream of bytes
+/// in [dataPacket] of a specified [sensorType] and it will automatically parse
+/// each of its defined [Signal]'s into their raw integer values.
+///
+/// If calibration data is provided, each signal can be processed into their
+/// real measured values through the [calibratedData] method. The calibrated values
+/// will be found in the [data] attribute;
+class SensorData {
+  final Sensors sensorType;
+  late Uint8List dataPacket;
+  Map<String, int> rawData = {};
+  Map<String, num> data = {};
+
+  SensorData(this.sensorType,
+      {Uint8List? dataPacket,
+      Vector3? offset,
+      Matrix3? sensitivity,
+      Matrix3? alignment}) {
+    var dataLoaded = false;
+    var dataSize = sensorType.getPacketSize();
+    if (dataPacket == null) {
+      this.dataPacket = Uint8List(dataSize);
+      for (var signal in sensorType.signals) {
+        rawData[signal.name] = 0;
+        data[signal.name] = 0;
+      }
+    } else if (dataPacket.length == dataSize) {
+      this.dataPacket = dataPacket;
+      rawData = parsedDataPacket(dataPacket);
+      dataLoaded = true;
+    } else {
+      throw Exception(
+          "$sensorType packet length (${dataPacket.length} is not the same as"
+          " Sensor type ($sensorType) length (${sensorType.getPacketSize()})");
+    }
+
+    if (dataLoaded) {
+      if (imuSensors.contains(sensorType)) {
+        if (offset != null && sensitivity != null && alignment != null) {
+          data = calibratedData(rawData,
+              offset: offset, sensitivity: sensitivity, alignment: alignment);
+        } else if (offset != null || sensitivity != null || alignment != null) {
+          throw Exception(
+              "$sensorType loaded with incomplete calibration parameters: "
+              "offset ($offset), sensitivity ($sensitivity), alignment ($alignment)");
+        }
+      } else {
+        data = calibratedData(rawData);
+      }
+    }
+  }
+  @override
+  String toString() {
+    var dataStrings = <String>[];
+    for (var signal in data.entries) {
+      dataStrings.add("${signal.key}: ${signal.value}");
+    }
+    return "$sensorType: ${dataStrings.join(', ')}";
+  }
+
+  Map<String, int> parsedDataPacket(Uint8List dataPacket) {
+    Map<String, int> parsedData = {};
+    var idx = 0;
+    var blob = ByteData.sublistView(dataPacket);
+    for (var signal in sensorType.signals) {
+      var endianness = signal.type.endianness;
+      switch (signal.type.intType) {
+        case "Uint8":
+          parsedData[signal.name] = blob.getUint8(idx);
+          break;
+        case "int8":
+          parsedData[signal.name] = blob.getInt8(idx);
+          break;
+        case "Uint16":
+          parsedData[signal.name] = blob.getUint16(idx, endianness);
+          break;
+        case "int16":
+          parsedData[signal.name] = blob.getInt16(idx, endianness);
+          break;
+        case "Uint32":
+          parsedData[signal.name] = blob.getUint32(idx, endianness);
+          break;
+        case "int32":
+          parsedData[signal.name] = blob.getInt32(idx, endianness);
+          break;
+        case "Uint64":
+          parsedData[signal.name] = blob.getUint64(idx, endianness);
+          break;
+        case "int64":
+          parsedData[signal.name] = blob.getInt64(idx, endianness);
+          break;
+      }
+      idx += signal.type.byteSize;
+    }
+    return parsedData;
+  }
+
+  /// Calibrates [rawData] against [sensitivity] and [alignment] matrices after being centered by a [offset] vector.
+  ///
+  /// Calibration follows [alignment]^(-1) • [sensitivity]^(-1) • ([rawData] - [offset])
+  /// and returns a properly calibrated [Vector3] vector.
+  Vector3 calibratedIMUData(
+      Vector3 rawData, Vector3 offset, Matrix3 sensitivity, Matrix3 alignment) {
+    var calibratedData = Vector3(0, 0, 0);
+    var centeredData = rawData - offset;
+    if (optimizedCalibration) {
+      // Due the alignment matrix shape at default values, the computation can
+      // be simplified to CALn = sign * (1/Sens.m) * (DATA.m - Offset.m)
+      // X and Y gets swapped and CALx sign depends on Align[1, 0] sign
+      var xSign = alignment.row1.x > 0 ? 1 : -1;
+      calibratedData.x = xSign * (1 / sensitivity.row1.y) * centeredData.y;
+      calibratedData.y = -1 * (1 / sensitivity.row0.x) * centeredData.x;
+      calibratedData.z = -1 * (1 / sensitivity.row2.z) * centeredData.z;
+    } else {
+      // This is in case the calibration alignment values do not follow:
+      // [  0, -1,  0 ]
+      // [ s1,  0,  0 ]  "s" representing a positive or negative sign
+      // [  0,  0, -1 ]
+      // This case is less efficient since requires expensive matrix inversions
+      // and vectorized multiplications.
+      var result = alignment.clone();
+      var invertedSensitivity = sensitivity.clone();
+      invertedSensitivity.invert();
+      result.invert();
+      result.multiply(invertedSensitivity);
+      calibratedData.x = result.dotRow(0, centeredData);
+      calibratedData.y = result.dotRow(1, centeredData);
+      calibratedData.z = result.dotRow(2, centeredData);
+    }
+    return calibratedData;
+  }
+
+  Map<String, num> calibratedData(Map<String, int> rawData,
+      {Vector3? offset, Matrix3? sensitivity, Matrix3? alignment}) {
+    Map<String, num> calibratedData = {};
+    switch (sensorType) {
+      case Sensors.dataTimestamp:
+        calibratedData["Timestamp"] = rawData["Timestamp"] ?? 0;
+        break;
+      case Sensors.lowNoiseAccel:
+      case Sensors.wideRangeAccel:
+      case Sensors.gyroscope:
+      case Sensors.magnetometer:
+        var rawDataVector = Vector3(
+          (rawData["X"] ?? 0).toDouble(),
+          (rawData["Y"] ?? 0).toDouble(),
+          (rawData["Z"] ?? 0).toDouble(),
+        );
+        var result =
+            calibratedIMUData(rawDataVector, offset!, sensitivity!, alignment!);
+        calibratedData["X"] = result.x;
+        calibratedData["Y"] = result.y;
+        calibratedData["Z"] = result.z;
+        break;
+      case Sensors.gsr:
+        break;
+      case Sensors.battery:
+        break;
+      case Sensors.ppg:
+        break;
+      case Sensors.pressureTemp:
+        break;
+    }
+    return calibratedData;
   }
 }
 
