@@ -221,6 +221,28 @@ class Signal {
   const Signal(this.name, this.type, {this.byteID});
   @override
   String toString() => "($type) $name signal (ID:$byteID)";
+  int getIntFromDataBlob(ByteData blob, idx) {
+    switch (type.intType) {
+      case "Uint8":
+        return blob.getUint8(idx);
+      case "int8":
+        return blob.getInt8(idx);
+      case "Uint16":
+        return blob.getUint16(idx, type.endianness);
+      case "int16":
+        return blob.getInt16(idx, type.endianness);
+      case "Uint32":
+        return blob.getUint32(idx, type.endianness);
+      case "int32":
+        return blob.getInt32(idx, type.endianness);
+      case "Uint64":
+        return blob.getUint64(idx, type.endianness);
+      case "int64":
+        return blob.getInt64(idx, type.endianness);
+      default:
+        return 0;
+    }
+  }
 }
 
 const Set imuSensors = {

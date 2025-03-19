@@ -16,46 +16,103 @@ const optimizedCalibration = true;
 
 DebugPrintCallback debugPrint = customDebugPrint("Shimmer3", true);
 Mutex _commMutex = Mutex();
+Map<int, MessageCodes> messageCodesDictionary = {};
+void initMessageCodesDictionary() {
+  for (var code in MessageCodes.values) {
+    messageCodesDictionary[code.value] = code;
+  }
+}
 
-class Shimmer3DataPacket {
-  final Set<Sensors> enabledSensors;
-  final Uint8List data;
-  late DateTime dateTime;
+class ResponseFrame {
+  final Uint8List packetBytes;
+  late MessageCodes responseType;
+
+  ResponseFrame(this.packetBytes) {
+    _verify(packetBytes);
+  }
+
+  void _verify(Uint8List bytes) {
+    if (bytes.length > 2) {
+      throw ArgumentError("Missing response data");
+    }
+    var ackByte = bytes[0];
+    var typeByte = bytes[1];
+    if (ackByte != 0xFF) {
+      throw ArgumentError("Response frame start ($ackByte) is not Ack byte");
+    }
+    if (messageCodesDictionary.isEmpty) {
+      throw Exception("[messageCodesDictionary] is not initialized");
+    }
+    MessageCodes? type = messageCodesDictionary[typeByte];
+    if (type == null) {
+      throw ArgumentError(
+          "Response type ($typeByte) is not part of [MessageCodes] enum");
+    }
+    responseType = type;
+  }
+}
+
+class DataFrame {
+  /// in the order as they will appear in [packetBytes]
+  final List<Sensors> enabledSensors;
+  final Uint8List packetBytes;
   static const int packetType = 0x00;
   static const int packetTypeLength = 1;
-  static const int timestampLength = 3;
+  // Unix timestamp in milliseconds
+  int configurationTimestampMs;
+  // Calibration Vectors ordered as [offset, sensitivity, alignment]
+  //
+  // Does not accepts an IMUCalibrationData object since new vectors are created
+  // on each vector getter call. We want to reuse the same calibration objects
+  // for every DataFrame object to avoid wasting memory and cpu cycles.
+  (Vector3, Matrix3, Matrix3)? imuCalibrationData;
+  BMP280CalibrationData? bmp280calibrationData;
+  List<SensorData> sensors = [];
 
-  Shimmer3DataPacket(this.enabledSensors, this.data) {
-    dateTime = parseDataTimestamp(data[1], data[2], data[3]);
+  DataFrame(
+    this.enabledSensors,
+    this.packetBytes, {
+    this.configurationTimestampMs = 0,
+    this.imuCalibrationData,
+    this.bmp280calibrationData,
+  }) {
+    enabledSensors.insert(0, Sensors.dataTimestamp);
+    _verify(enabledSensors, packetBytes);
+    if (configurationTimestampMs != 0 ||
+        imuCalibrationData != null ||
+        bmp280calibrationData != null) {
+      parseDataFrame(
+          configTimestampMs: configurationTimestampMs,
+          imuCalibrationData: imuCalibrationData,
+          bmp280CalibrationData: bmp280calibrationData);
+    }
   }
 
-  static DateTime parseDataTimestamp(int byte0, int byte1, int byte2) {
-    var ts = byte0 + (byte1 * 256) + (byte2 * 65536);
-    return DateTime.fromMillisecondsSinceEpoch(ts * 1000);
-  }
+  static bool isDataFrame(Uint8List bytes) =>
+      bytes.isNotEmpty && bytes[0] == packetType;
 
-  static Shimmer3DataPacket parse(Set<Sensors> enabledSensors, Uint8List data) {
-    if (enabledSensors.isEmpty) {
+  static void _verify(List<Sensors> enabledSensors, Uint8List bytes) {
+    if (enabledSensors.length <= 1) {
       throw ArgumentError("Enable at least one sensor");
     }
-    var validLength = packetTypeLength + timestampLength;
+    var validLength = packetTypeLength;
     for (var sensor in enabledSensors) {
-      validLength += sensor.packetLength;
+      validLength += sensor.getPacketSize();
     }
-    if (data.length != validLength) {
+    if (bytes.length != validLength) {
       throw ArgumentError(
-          "Provided data packet length (${data.length}) does not match with enabled sensors: $enabledSensors");
+          "Provided data packet length (${bytes.length}) does not match with enabled sensors: $enabledSensors");
     }
-    if (data[0] != packetType) {
+    if (bytes[0] != packetType) {
       throw ArgumentError(
-          "Data packet's packet type (${data[0]}) does not match DataPacket($packetType)");
+          "Data packet's packet type (${bytes[0]}) does not match dataPacket($packetType)");
     }
-    var timestamp = data[1] + (data[2] * 256) + (data[2] * 65536);
-    return Shimmer3DataPacket(enabledSensors, data);
   }
 
-  static Shimmer3DataPacket? tryParse(
-      Set<Sensors> enabledSensors, Uint8List data) {
+  static DataFrame parse(List<Sensors> enabledSensors, Uint8List data) =>
+      DataFrame(enabledSensors, data);
+
+  static DataFrame? tryParse(List<Sensors> enabledSensors, Uint8List data) {
     try {
       return parse(enabledSensors, data);
     } catch (_) {
@@ -63,13 +120,37 @@ class Shimmer3DataPacket {
     }
   }
 
+  void parseDataFrame({
+    int? configTimestampMs,
+    (Vector3, Matrix3, Matrix3)? imuCalibrationData,
+    BMP280CalibrationData? bmp280CalibrationData,
+  }) {
+    if (configTimestampMs != null) {
+      configurationTimestampMs = configTimestampMs;
+    }
+    var idx = packetTypeLength;
+    int endIdx;
+    for (var sensor in enabledSensors) {
+      endIdx = idx + sensor.getPacketSize();
+      var sensorData = SensorData(
+        sensor,
+        configurationTimestampMs: configurationTimestampMs,
+        rawBytes: packetBytes.sublist(idx, endIdx),
+        imuCalibrationData: imuCalibrationData,
+        bmp280Coefficients: bmp280CalibrationData,
+      );
+      sensors.add(sensorData);
+      idx = endIdx;
+    }
+  }
+
   @override
-  int get hashCode => Object.hash(enabledSensors, data);
+  int get hashCode => Object.hash(enabledSensors, packetBytes);
   @override
-  bool operator ==(covariant Shimmer3DataPacket other) {
+  bool operator ==(covariant DataFrame other) {
     if (identical(this, other)) return true;
-    return setEquals(enabledSensors, other.enabledSensors) &&
-        listEquals(data, other.data);
+    return listEquals(enabledSensors, other.enabledSensors) &&
+        listEquals(packetBytes, other.packetBytes);
   }
 }
 
@@ -87,17 +168,20 @@ class SensorData {
   late Uint8List rawBytes;
   Map<String, int> rawData = {};
   Map<String, num> data = {};
+  int configurationTimestampMs;
+  (Vector3, Matrix3, Matrix3)? imuCalibrationData;
+  BMP280CalibrationData? bmp280Coefficients;
 
   SensorData(
     this.sensorType, {
     Uint8List? rawBytes,
-    Vector3? offset,
-    Matrix3? sensitivity,
-    Matrix3? alignment,
-    BMP280CalibrationData? bmp280Coefficients,
+    this.configurationTimestampMs = 0,
+    this.imuCalibrationData,
+    this.bmp280Coefficients,
   }) {
     var dataLoaded = false;
     var dataSize = sensorType.getPacketSize();
+
     if (rawBytes == null) {
       this.rawBytes = Uint8List(dataSize);
       for (var signal in sensorType.signals) {
@@ -115,28 +199,7 @@ class SensorData {
     }
 
     if (dataLoaded) {
-      if (imuSensors.contains(sensorType)) {
-        // If all calibration vectors are given for a IMU Sensor type data
-        // the rawData will be automatically processed.
-        if (offset != null && sensitivity != null && alignment != null) {
-          data = calibratedData(rawData,
-              offset: offset, sensitivity: sensitivity, alignment: alignment);
-        } else if (offset != null || sensitivity != null || alignment != null) {
-          // If only one or two of them are set, an Exception is thrown
-          throw Exception(
-              "$sensorType loaded with incomplete calibration parameters: "
-              "offset ($offset), sensitivity ($sensitivity), alignment ($alignment)");
-        }
-        // If no calibration vectors are given, no calibration is done on rawData
-      } else if (sensorType == Sensors.pressureTemp) {
-        if (bmp280Coefficients != null) {
-          data =
-              calibratedData(rawData, bmp280Coefficients: bmp280Coefficients);
-        }
-      } else {
-        // Any other type of data can be statically processed.
-        data = calibratedData(rawData);
-      }
+      calibrateData();
     }
   }
 
@@ -149,49 +212,44 @@ class SensorData {
     return "$sensorType: ${dataStrings.join(', ')}";
   }
 
+  void calibrateData() {
+    if (imuSensors.contains(sensorType)) {
+      // If all calibration vectors are given for a IMU Sensor type data
+      // the rawData will be automatically processed.
+      if (imuCalibrationData != null) {
+        data = calibratedData(rawData, imuCalibrationData: imuCalibrationData);
+      }
+      // If no calibration vectors are given, no calibration is done on rawData
+    } else if (sensorType == Sensors.pressureTemp) {
+      if (bmp280Coefficients != null) {
+        data = calibratedData(rawData, bmp280Coefficients: bmp280Coefficients);
+      }
+    } else {
+      // Any other type of data can be statically processed.
+      data = calibratedData(rawData);
+    }
+  }
+
   Map<String, int> parsedDataPacket(Uint8List dataPacket) {
     Map<String, int> parsedData = {};
     var idx = 0;
     var blob = ByteData.sublistView(dataPacket);
     for (var signal in sensorType.signals) {
-      var endianness = signal.type.endianness;
-      switch (signal.type.intType) {
-        case "Uint8":
-          parsedData[signal.name] = blob.getUint8(idx);
-          break;
-        case "int8":
-          parsedData[signal.name] = blob.getInt8(idx);
-          break;
-        case "Uint16":
-          parsedData[signal.name] = blob.getUint16(idx, endianness);
-          break;
-        case "int16":
-          parsedData[signal.name] = blob.getInt16(idx, endianness);
-          break;
-        case "Uint32":
-          parsedData[signal.name] = blob.getUint32(idx, endianness);
-          break;
-        case "int32":
-          parsedData[signal.name] = blob.getInt32(idx, endianness);
-          break;
-        case "Uint64":
-          parsedData[signal.name] = blob.getUint64(idx, endianness);
-          break;
-        case "int64":
-          parsedData[signal.name] = blob.getInt64(idx, endianness);
-          break;
-      }
+      parsedData[signal.name] = signal.getIntFromDataBlob(blob, idx);
       idx += signal.type.byteSize;
     }
     return parsedData;
   }
 
-  /// Calibrates [rawData] against [sensitivity] and [alignment] matrices after being centered by a [offset] vector.
+  /// Calibrates [rawData] against [sensitivity] and [alignment] matrices after centered by an [offset] vector.
   ///
   /// Calibration follows [alignment]^(-1) • [sensitivity]^(-1) • ([rawData] - [offset])
   /// and returns a properly calibrated [Vector3] vector.
   Vector3 calibratedIMUData(
-      Vector3 rawData, Vector3 offset, Matrix3 sensitivity, Matrix3 alignment) {
+    Vector3 rawData,
+    (Vector3, Matrix3, Matrix3) imuCalibrationData,
+  ) {
+    var (offset, sensitivity, alignment) = imuCalibrationData;
     var calibratedData = Vector3(0, 0, 0);
     var centeredData = rawData - offset;
     if (optimizedCalibration) {
@@ -223,27 +281,30 @@ class SensorData {
 
   Map<String, num> calibratedData(
     Map<String, int> rawData, {
-    Vector3? offset,
-    Matrix3? sensitivity,
-    Matrix3? alignment,
+    (Vector3, Matrix3, Matrix3)? imuCalibrationData,
     BMP280CalibrationData? bmp280Coefficients,
   }) {
     Map<String, num> calibratedData = {};
     switch (sensorType) {
       case Sensors.dataTimestamp:
-        calibratedData["Timestamp"] = (rawData["Timestamp"] ?? 0) / 1000;
+        var timestampMs =
+            (rawData["Timestamp"] ?? 0) + configurationTimestampMs;
+        calibratedData["Timestamp"] = timestampMs / 1000;
         break;
       case Sensors.lowNoiseAccel:
       case Sensors.wideRangeAccel:
       case Sensors.gyroscope:
       case Sensors.magnetometer:
+        if (imuCalibrationData == null) {
+          throw Exception(
+              "$sensorType cannot be calibrated without [imuCalibrationData]");
+        }
         var rawDataVector = Vector3(
           (rawData["X"] ?? 0).toDouble(),
           (rawData["Y"] ?? 0).toDouble(),
           (rawData["Z"] ?? 0).toDouble(),
         );
-        var calibrated =
-            calibratedIMUData(rawDataVector, offset!, sensitivity!, alignment!);
+        var calibrated = calibratedIMUData(rawDataVector, imuCalibrationData);
         calibratedData["X"] = calibrated.x;
         calibratedData["Y"] = calibrated.y;
         calibratedData["Z"] = calibrated.z;
@@ -287,26 +348,26 @@ class SensorData {
         var rawTemp = rawData["Temp"] ?? 0;
         var rawPress = (rawData["Press"] ?? 0) >> 4;
 
-        var coeff = bmp280Coefficients!;
-        var centeredTemp = rawTemp - coeff.p1;
-        var x1 = centeredTemp * coeff.p2 >> 10;
-        var x2 = ((centeredTemp * centeredTemp) >> 12) * coeff.p3 >> 14;
+        var C = bmp280Coefficients!;
+        var centeredTemp = rawTemp - C.p1;
+        var x1 = centeredTemp * C.p2 >> 10;
+        var x2 = ((centeredTemp * centeredTemp) >> 12) * C.p3 >> 14;
         var tempFine = x1 + x2;
         calibratedData["Temp_C"] = ((tempFine * 5 + 128) >> 8) / 100;
 
         var press = 0;
         var var1 = tempFine - 128000;
-        var var2 = var1 * var1 * coeff.p6;
-        var2 = var2 + ((var1 * coeff.p5) << 17);
-        var2 = var2 + (coeff.p4 << 35);
-        var1 = ((var1 * var1 * coeff.p3) >> 8) + ((var1 * coeff.p2) << 12);
-        var1 = (((1 << 47) + var1)) * coeff.p1 >> 33;
+        var var2 = var1 * var1 * C.p6;
+        var2 = var2 + ((var1 * C.p5) << 17);
+        var2 = var2 + (C.p4 << 35);
+        var1 = ((var1 * var1 * C.p3) >> 8) + ((var1 * C.p2) << 12);
+        var1 = (((1 << 47) + var1)) * C.p1 >> 33;
         if (var1 != 0) {
           press = 1048576 - rawPress;
           press = ((((press << 31) - var2) * 3125) / var1).toInt();
-          var1 = (coeff.p9 * (press >> 13) * (press >> 13)) >> 25;
-          var2 = (coeff.p8 * press) >> 19;
-          press = ((press + var1 + var2) >> 8) + (coeff.p7 << 4);
+          var1 = (C.p9 * (press >> 13) * (press >> 13)) >> 25;
+          var2 = (C.p8 * press) >> 19;
+          press = ((press + var1 + var2) >> 8) + (C.p7 << 4);
         }
         calibratedData["Press_Pa"] = press / 256;
         break;
@@ -346,9 +407,13 @@ class Shimmer3 {
   List<Shimmer3Event> receivedEvents = [];
   final ackTimeout = 10;
 
+  // Device Configuration
+  int dataBufferSize = 1;
+
   Shimmer3(this.device) {
     _blueClassic = FlutterBlueClassic(usesFineLocation: false);
     _controller = StreamController<Shimmer3Event>.broadcast();
+    initMessageCodesDictionary();
   }
 
   bool get isConnected => _connection?.isConnected ?? false;
@@ -371,7 +436,7 @@ class Shimmer3 {
       }
       var event = Shimmer3Event(buffer);
       debugPrint("Packet received: $event");
-      if (MessageCodes.acknowledge.sameAsMessage(buffer)) {
+      if (MessageCodes.acknowledged.sameAsMessage(buffer)) {
         receivedEvents.add(event);
         return;
       }
@@ -430,7 +495,7 @@ class Shimmer3 {
         continue;
       }
       for (final (idx, event) in receivedEvents.indexed) {
-        if (MessageCodes.acknowledge.sameAsMessage(event.message)) {
+        if (MessageCodes.acknowledged.sameAsMessage(event.message)) {
           acknowledged = true;
           receivedEvents.removeAt(idx);
           if (reference.isNotEmpty) {
@@ -445,6 +510,8 @@ class Shimmer3 {
     return acknowledged;
   }
 
+  Future<bool> getDeviceConfiguration() async {}
+
   Future<bool> initialize(List<Sensors> sensors, {sampleRate = 100}) async {
     return _commMutex.protect<bool>(() async {
       int command, byte0, byte1, byte2;
@@ -456,7 +523,7 @@ class Shimmer3 {
       for (var sensor in sensors) {
         configuration += 1 << sensor.enableBitShift;
       }
-      command = MessageCodes.initSensors.value;
+      command = MessageCodes.setSensors.value;
       byte0 = (configuration & 0x00ff0000) >> 16;
       byte1 = (configuration & 0x0000ff00) >> 8;
       byte2 = (configuration & 0x000000ff);
@@ -467,7 +534,7 @@ class Shimmer3 {
       }
 
       // Enable expansion board internal power
-      command = MessageCodes.enableExpIntPower.value;
+      command = MessageCodes.setExpansionBoardInternalPower.value;
       payload = Uint8List.fromList([command, 1]);
 
       if (!(await sendCommand("enable expansion board power", payload))) {
@@ -484,6 +551,8 @@ class Shimmer3 {
       if (!(await sendCommand("set up sampling rate", payload))) {
         return false;
       }
+
+      // TODO: Set Real World Clock
 
       flushQueue();
       return true;
