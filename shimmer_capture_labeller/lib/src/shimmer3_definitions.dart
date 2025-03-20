@@ -160,7 +160,12 @@ enum MessageCodes {
   // Device Information
   deviceVersion(0x25),
   getFWVersion(0x2E),
-  fwVersion(0x2F),
+  fwVersion(0x2F, responseSignals: [
+    ("FirmwareID", SignalTypes.u16l),
+    ("Major", SignalTypes.u16l),
+    ("Minor", SignalTypes.u8),
+    ("RC", SignalTypes.u8),
+  ]),
   uniqueSerial(0x3D),
   getUniqueSerial(0x3E),
   getDeviceVersion(0x3F),
@@ -170,46 +175,60 @@ enum MessageCodes {
   dummyCommand(0x96),
   getBluetoothVersionString(0xA1),
   bluetoothVersionString(0xA2),
-
   acknowledged(0xFF),
   ;
 
   final int value;
-  const MessageCodes(this.value);
+  final List<(String, SignalTypes)>? responseSignals;
+
+  const MessageCodes(this.value, {this.responseSignals});
+
   Uint8List asUint8List() => Uint8List.fromList([value]);
+
   bool sameAsMessage(Uint8List msg) =>
       msg.length == 1 && msg.single.toInt() == value;
+
+  /// This Map can be used as a dictionary to lookup a MessageCode by it's raw value
+  static Map<int, MessageCodes> asDictionaryMap() {
+    Map<int, MessageCodes> dictionary = {};
+    for (var code in MessageCodes.values) {
+      dictionary[code.value] = code;
+    }
+    return dictionary;
+  }
 }
 
 enum SignalTypes {
-  u8("Uint8", 1, Endian.big),
-  i8("int8", 1, Endian.big),
-  u12l("Uint16", 2, Endian.little),
-  u12b("Uint16", 2, Endian.big),
-  i12l("int16", 2, Endian.little),
-  i12b("int16", 2, Endian.big),
-  u16l("Uint16", 2, Endian.little),
-  u16b("Uint16", 2, Endian.big),
-  i16l("int16", 2, Endian.little),
-  i16b("int16", 2, Endian.big),
-  u24l("Uint32", 3, Endian.little),
-  u24b("Uint32", 3, Endian.big),
-  i24l("int32", 3, Endian.little),
-  i24b("int32", 3, Endian.big),
-  u32l("Uint32", 4, Endian.little),
-  u32b("Uint32", 4, Endian.big),
-  i32l("int32", 4, Endian.little),
-  i32b("int32", 4, Endian.big),
-  u64l("Uint64", 8, Endian.little),
-  u64b("Uint64", 8, Endian.big),
-  i64l("int64", 8, Endian.little),
-  i64b("int64", 8, Endian.big),
+  u8(1, Endian.big),
+  i8(1, Endian.big),
+  u12l(2, Endian.little),
+  u12b(2, Endian.big),
+  i12l(2, Endian.little),
+  i12b(2, Endian.big),
+  u16l(2, Endian.little),
+  u16b(2, Endian.big),
+  i16l(2, Endian.little),
+  i16b(2, Endian.big),
+  u24l(3, Endian.little),
+  u24b(3, Endian.big),
+  i24l(3, Endian.little),
+  i24b(3, Endian.big),
+  u32l(4, Endian.little),
+  u32b(4, Endian.big),
+  i32l(4, Endian.little),
+  i32b(4, Endian.big),
+  u64l(8, Endian.little),
+  u64b(8, Endian.big),
+  i64l(8, Endian.little),
+  i64b(8, Endian.big),
+  ascii(0, Endian.big), // First data byte will indicate the string's length
   ;
 
-  final String intType;
   final int byteSize;
   final Endian endianness;
-  const SignalTypes(this.intType, this.byteSize, this.endianness);
+
+  const SignalTypes(this.byteSize, this.endianness);
+
   @override
   String toString() => name;
 }
@@ -218,31 +237,72 @@ class Signal {
   final String name;
   final SignalTypes type;
   final int? byteID;
+
   const Signal(this.name, this.type, {this.byteID});
+
   @override
   String toString() => "($type) $name signal (ID:$byteID)";
+
   int getIntFromDataBlob(ByteData blob, idx) {
-    switch (type.intType) {
-      case "Uint8":
+    switch (type) {
+      case SignalTypes.u8:
         return blob.getUint8(idx);
-      case "int8":
+      case SignalTypes.i8:
         return blob.getInt8(idx);
-      case "Uint16":
+      case SignalTypes.u12l:
+      case SignalTypes.u12b:
+      case SignalTypes.u16l:
+      case SignalTypes.u16b:
         return blob.getUint16(idx, type.endianness);
-      case "int16":
+      case SignalTypes.i12l:
+      case SignalTypes.i12b:
+      case SignalTypes.i16l:
+      case SignalTypes.i16b:
         return blob.getInt16(idx, type.endianness);
-      case "Uint32":
+      case SignalTypes.u24l:
+      case SignalTypes.u24b:
+      case SignalTypes.u32l:
+      case SignalTypes.u32b:
         return blob.getUint32(idx, type.endianness);
-      case "int32":
+      case SignalTypes.i24l:
+      case SignalTypes.i24b:
+      case SignalTypes.i32l:
+      case SignalTypes.i32b:
         return blob.getInt32(idx, type.endianness);
-      case "Uint64":
+      case SignalTypes.u64l:
+      case SignalTypes.u64b:
         return blob.getUint64(idx, type.endianness);
-      case "int64":
+      case SignalTypes.i64l:
+      case SignalTypes.i64b:
         return blob.getInt64(idx, type.endianness);
       default:
         return 0;
     }
   }
+
+  String getStringFrom(ByteData blob) {}
+}
+
+enum Signals {
+  dataTimestamp(SignalTypes.u24b),
+  lowNoiseAccelX(SignalTypes.u12l, byteID: 0x00),
+  lowNoiseAccelY(SignalTypes.u12l, byteID: 0x01),
+  lowNoiseAccelZ(SignalTypes.u12l, byteID: 0x02),
+  wideRangeAccelX(SignalTypes.i16l, byteID: 0x04),
+  wideRangeAccelY(SignalTypes.i16l, byteID: 0x05),
+  wideRangeAccelZ(SignalTypes.i16l, byteID: 0x06),
+  gyroscopeX(SignalTypes.i16b, byteID: 0x0A),
+  gyroscopeY(SignalTypes.i16b, byteID: 0x0B),
+  gyroscopeZ(SignalTypes.i16b, byteID: 0x0C),
+  magnetometerX(SignalTypes.i16l, byteID: 0x07),
+  magnetometerY(SignalTypes.i16l, byteID: 0x08),
+  magnetometerZ(SignalTypes.i16l, byteID: 0x09),
+  ;
+
+  final SignalTypes type;
+  final int? byteID;
+
+  const Signals(this.type, {this.byteID});
 }
 
 const Set imuSensors = {
@@ -293,7 +353,9 @@ enum Sensors {
 
   final int enableBitShift;
   final List<Signal> signals;
+
   const Sensors(this.enableBitShift, this.signals);
+
   @override
   String toString() => name;
 
@@ -319,6 +381,7 @@ enum ExpansionBoards {
   ;
 
   final int id;
+
   const ExpansionBoards(this.id);
 }
 
@@ -328,6 +391,7 @@ class IMUCalibrationData {
   final List<double> _offset;
   final List<double> _sensitivity;
   final List<double> _alignment;
+
   const IMUCalibrationData(List<double> offset3, List<double> sensitivity3x3,
       List<double> alignment3x3)
       : _offset = offset3,
@@ -335,13 +399,16 @@ class IMUCalibrationData {
         _alignment = alignment3x3;
 
   Vector3 get offset => Vector3.array(_offset);
+
   Matrix3 get sensitivity => Matrix3.fromList(_sensitivity);
+
   Matrix3 get alignment => Matrix3.fromList(_alignment);
 }
 
 class BMP280CalibrationData {
   final int t1, t2, t3;
   final int p1, p2, p3, p4, p5, p6, p7, p8, p9;
+
   const BMP280CalibrationData({
     this.t1 = 27504,
     this.t2 = 26435,
@@ -472,6 +539,7 @@ enum IMUDefaultCalibrations {
   ;
 
   final IMUCalibrationData vectors;
+
   const IMUDefaultCalibrations(this.vectors);
 }
 

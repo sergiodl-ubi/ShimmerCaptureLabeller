@@ -16,22 +16,18 @@ const optimizedCalibration = true;
 
 DebugPrintCallback debugPrint = customDebugPrint("Shimmer3", true);
 Mutex _commMutex = Mutex();
-Map<int, MessageCodes> messageCodesDictionary = {};
-void initMessageCodesDictionary() {
-  for (var code in MessageCodes.values) {
-    messageCodesDictionary[code.value] = code;
-  }
-}
+Map<int, MessageCodes> messageCodesDictionary = MessageCodes.asDictionaryMap();
 
 class ResponseFrame {
   final Uint8List packetBytes;
   late MessageCodes responseType;
+  final packetHeaderLength = 2;
 
   ResponseFrame(this.packetBytes) {
-    _verify(packetBytes);
+    responseType = _verify(packetBytes);
   }
 
-  void _verify(Uint8List bytes) {
+  MessageCodes _verify(Uint8List bytes) {
     if (bytes.length > 2) {
       throw ArgumentError("Missing response data");
     }
@@ -40,15 +36,33 @@ class ResponseFrame {
     if (ackByte != 0xFF) {
       throw ArgumentError("Response frame start ($ackByte) is not Ack byte");
     }
-    if (messageCodesDictionary.isEmpty) {
-      throw Exception("[messageCodesDictionary] is not initialized");
-    }
     MessageCodes? type = messageCodesDictionary[typeByte];
     if (type == null) {
       throw ArgumentError(
           "Response type ($typeByte) is not part of [MessageCodes] enum");
     }
-    responseType = type;
+    return type;
+  }
+
+  static ResponseFrame parse(Uint8List data) => ResponseFrame(data);
+
+  static ResponseFrame? tryParse(Uint8List data) {
+    try {
+      return parse(data);
+    } catch (_) {
+      return null;
+    }
+  }
+
+  void parseDataFrame() {}
+
+  @override
+  int get hashCode => Object.hash(packetBytes);
+
+  @override
+  bool operator ==(covariant DataFrame other) {
+    if (identical(this, other)) return true;
+    return listEquals(packetBytes, other.packetBytes);
   }
 }
 
@@ -58,8 +72,10 @@ class DataFrame {
   final Uint8List packetBytes;
   static const int packetType = 0x00;
   static const int packetTypeLength = 1;
+
   // Unix timestamp in milliseconds
   int configurationTimestampMs;
+
   // Calibration Vectors ordered as [offset, sensitivity, alignment]
   //
   // Does not accepts an IMUCalibrationData object since new vectors are created
@@ -146,6 +162,7 @@ class DataFrame {
 
   @override
   int get hashCode => Object.hash(enabledSensors, packetBytes);
+
   @override
   bool operator ==(covariant DataFrame other) {
     if (identical(this, other)) return true;
@@ -381,6 +398,7 @@ class Shimmer3Event {
   final Uint8List message;
 
   Shimmer3Event(this.message, {DateTime? datetime}) : datetime = DateTime.now();
+
   Shimmer3Event.fromMilliseconds(this.message, int timestamp)
       : datetime = DateTime.fromMillisecondsSinceEpoch(timestamp);
 
@@ -389,6 +407,7 @@ class Shimmer3Event {
 
   @override
   int get hashCode => Object.hash(datetime, message);
+
   @override
   bool operator ==(covariant Shimmer3Event other) {
     if (identical(this, other)) return true;
@@ -413,11 +432,12 @@ class Shimmer3 {
   Shimmer3(this.device) {
     _blueClassic = FlutterBlueClassic(usesFineLocation: false);
     _controller = StreamController<Shimmer3Event>.broadcast();
-    initMessageCodesDictionary();
   }
 
   bool get isConnected => _connection?.isConnected ?? false;
+
   bool get isStreaming => _streaming;
+
   Stream<Shimmer3Event> get stream => _controller.stream;
 
   Future<bool> connect() async {
