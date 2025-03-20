@@ -185,8 +185,7 @@ enum MessageCodes {
 
   Uint8List asUint8List() => Uint8List.fromList([value]);
 
-  bool sameAsMessage(Uint8List msg) =>
-      msg.length == 1 && msg.single.toInt() == value;
+  bool sameAsMessage(Uint8List msg) => msg.length == 1 && msg.single.toInt() == value;
 
   /// This Map can be used as a dictionary to lookup a MessageCode by it's raw value
   static Map<int, MessageCodes> asDictionaryMap() {
@@ -221,7 +220,6 @@ enum SignalTypes {
   u64b(8, Endian.big),
   i64l(8, Endian.little),
   i64b(8, Endian.big),
-  ascii(0, Endian.big), // First data byte will indicate the string's length
   ;
 
   final int byteSize;
@@ -283,26 +281,43 @@ class Signal {
   String getStringFrom(ByteData blob) {}
 }
 
+enum ProcessingMethods {
+  adc,
+  ascii,
+  imu,
+  none,
+}
+
 enum Signals {
+  lowNoiseAccelX(SignalTypes.u12l, processingMethod: ProcessingMethods.imu, byteID: 0x00),
+  lowNoiseAccelY(SignalTypes.u12l, processingMethod: ProcessingMethods.imu, byteID: 0x01),
+  lowNoiseAccelZ(SignalTypes.u12l, processingMethod: ProcessingMethods.imu, byteID: 0x02),
+  wideRangeAccelX(SignalTypes.i16l, processingMethod: ProcessingMethods.imu, byteID: 0x04),
+  wideRangeAccelY(SignalTypes.i16l, processingMethod: ProcessingMethods.imu, byteID: 0x05),
+  wideRangeAccelZ(SignalTypes.i16l, processingMethod: ProcessingMethods.imu, byteID: 0x06),
+  gyroscopeX(SignalTypes.i16b, processingMethod: ProcessingMethods.imu, byteID: 0x0A),
+  gyroscopeY(SignalTypes.i16b, processingMethod: ProcessingMethods.imu, byteID: 0x0B),
+  gyroscopeZ(SignalTypes.i16b, processingMethod: ProcessingMethods.imu, byteID: 0x0C),
+  magnetometerX(SignalTypes.i16l, processingMethod: ProcessingMethods.imu, byteID: 0x07),
+  magnetometerY(SignalTypes.i16l, processingMethod: ProcessingMethods.imu, byteID: 0x08),
+  magnetometerZ(SignalTypes.i16l, processingMethod: ProcessingMethods.imu, byteID: 0x09),
+  gsrADC(SignalTypes.u16l, processingMethod: ProcessingMethods.adc, byteID: 0x1C),
+  batteryADC(SignalTypes.u12l, processingMethod: ProcessingMethods.adc, byteID: 0x03),
+  ppgADC(SignalTypes.u12l, processingMethod: ProcessingMethods.adc, byteID: 0x12),
+  pressure(SignalTypes.u16b, processingMethod: ProcessingMethods.adc, byteID: 0x1a),
+  temperature(SignalTypes.u24b, processingMethod: ProcessingMethods.adc, byteID: 0x1b),
   dataTimestamp(SignalTypes.u24b),
-  lowNoiseAccelX(SignalTypes.u12l, byteID: 0x00),
-  lowNoiseAccelY(SignalTypes.u12l, byteID: 0x01),
-  lowNoiseAccelZ(SignalTypes.u12l, byteID: 0x02),
-  wideRangeAccelX(SignalTypes.i16l, byteID: 0x04),
-  wideRangeAccelY(SignalTypes.i16l, byteID: 0x05),
-  wideRangeAccelZ(SignalTypes.i16l, byteID: 0x06),
-  gyroscopeX(SignalTypes.i16b, byteID: 0x0A),
-  gyroscopeY(SignalTypes.i16b, byteID: 0x0B),
-  gyroscopeZ(SignalTypes.i16b, byteID: 0x0C),
-  magnetometerX(SignalTypes.i16l, byteID: 0x07),
-  magnetometerY(SignalTypes.i16l, byteID: 0x08),
-  magnetometerZ(SignalTypes.i16l, byteID: 0x09),
+  fwVersionIDResponse(SignalTypes.u16l),
+  fwMajorResponse(SignalTypes.u16l),
+  fwMinorResponse(SignalTypes.u8),
+  fwRCResponse(SignalTypes.u8),
   ;
 
   final SignalTypes type;
+  final ProcessingMethods processingMethod;
   final int? byteID;
 
-  const Signals(this.type, {this.byteID});
+  const Signals(this.type, {this.processingMethod = ProcessingMethods.none, this.byteID});
 }
 
 const Set imuSensors = {
@@ -313,54 +328,26 @@ const Set imuSensors = {
 };
 
 enum Sensors {
-  dataTimestamp(0, [
-    Signal("Timestamp", SignalTypes.u24b),
-  ]),
-  lowNoiseAccel(23, [
-    Signal("X", SignalTypes.u12l, byteID: 0x00),
-    Signal("Y", SignalTypes.u12l, byteID: 0x01),
-    Signal("Z", SignalTypes.u12l, byteID: 0x02),
-  ]),
-  wideRangeAccel(12, [
-    Signal("X", SignalTypes.i16l, byteID: 0x04),
-    Signal("Y", SignalTypes.i16l, byteID: 0x05),
-    Signal("Z", SignalTypes.i16l, byteID: 0x06),
-  ]),
-  gyroscope(22, [
-    Signal("X", SignalTypes.i16b, byteID: 0x0a),
-    Signal("Y", SignalTypes.i16b, byteID: 0x0b),
-    Signal("Z", SignalTypes.i16b, byteID: 0x0c),
-  ]),
-  magnetometer(21, [
-    Signal("X", SignalTypes.i16l, byteID: 0x07),
-    Signal("Y", SignalTypes.i16l, byteID: 0x08),
-    Signal("Z", SignalTypes.i16l, byteID: 0x09),
-  ]),
-  gsr(18, [
-    Signal("ADC", SignalTypes.u16l, byteID: 0x1c),
-  ]),
-  battery(13, [
-    Signal("ADC", SignalTypes.u12l, byteID: 0x03),
-  ]),
-  ppg(8, [
-    Signal("ADC", SignalTypes.u12l, byteID: 0x12),
-  ]),
-  pressureTemp(2, [
-    Signal("Temp", SignalTypes.u16b, byteID: 0x1a),
-    Signal("Press", SignalTypes.u24b, byteID: 0x1b),
-  ]),
+  dataTimestamp(0, [Signals.dataTimestamp]),
+  lowNoiseAccel(23, [Signals.lowNoiseAccelX, Signals.lowNoiseAccelY, Signals.lowNoiseAccelZ]),
+  wideRangeAccel(12, [Signals.wideRangeAccelX, Signals.wideRangeAccelY, Signals.wideRangeAccelZ]),
+  gyroscope(22, [Signals.gyroscopeX, Signals.gyroscopeY, Signals.gyroscopeZ]),
+  magnetometer(21, [Signals.magnetometerX, Signals.magnetometerY, Signals.magnetometerZ]),
+  gsr(18, [Signals.gsrADC]),
+  battery(13, [Signals.batteryADC]),
+  ppg(8, [Signals.ppgADC]),
+  pressureTemp(2, [Signals.pressure, Signals.pressure]),
   ;
 
   final int enableBitShift;
-  final List<Signal> signals;
+  final List<Signals> signals;
 
   const Sensors(this.enableBitShift, this.signals);
 
   @override
   String toString() => name;
 
-  int getPacketSize() =>
-      signals.fold(0, (acc, signal) => acc + signal.type.byteSize);
+  int getPacketSize() => signals.fold(0, (acc, signal) => acc + signal.type.byteSize);
 }
 
 // ########### Device Parameters ##########
@@ -392,8 +379,7 @@ class IMUCalibrationData {
   final List<double> _sensitivity;
   final List<double> _alignment;
 
-  const IMUCalibrationData(List<double> offset3, List<double> sensitivity3x3,
-      List<double> alignment3x3)
+  const IMUCalibrationData(List<double> offset3, List<double> sensitivity3x3, List<double> alignment3x3)
       : _offset = offset3,
         _sensitivity = sensitivity3x3,
         _alignment = alignment3x3;
