@@ -38,8 +38,7 @@ class ResponseFrame {
     }
     MessageCodes? type = messageCodesDictionary[typeByte];
     if (type == null) {
-      throw ArgumentError(
-          "Response type ($typeByte) is not part of [MessageCodes] enum");
+      throw ArgumentError("Response type ($typeByte) is not part of [MessageCodes] enum");
     }
     return type;
   }
@@ -57,7 +56,7 @@ class ResponseFrame {
   void parseDataFrame() {}
 
   @override
-  int get hashCode => Object.hash(packetBytes);
+  int get hashCode => Object.hash(responseType, packetBytes);
 
   @override
   bool operator ==(covariant DataFrame other) {
@@ -94,9 +93,7 @@ class DataFrame {
   }) {
     enabledSensors.insert(0, Sensors.dataTimestamp);
     _verify(enabledSensors, packetBytes);
-    if (configurationTimestampMs != 0 ||
-        imuCalibrationData != null ||
-        bmp280calibrationData != null) {
+    if (configurationTimestampMs != 0 || imuCalibrationData != null || bmp280calibrationData != null) {
       parseDataFrame(
           configTimestampMs: configurationTimestampMs,
           imuCalibrationData: imuCalibrationData,
@@ -104,8 +101,7 @@ class DataFrame {
     }
   }
 
-  static bool isDataFrame(Uint8List bytes) =>
-      bytes.isNotEmpty && bytes[0] == packetType;
+  static bool isDataFrame(Uint8List bytes) => bytes.isNotEmpty && bytes[0] == packetType;
 
   static void _verify(List<Sensors> enabledSensors, Uint8List bytes) {
     if (enabledSensors.length <= 1) {
@@ -120,13 +116,11 @@ class DataFrame {
           "Provided data packet length (${bytes.length}) does not match with enabled sensors: $enabledSensors");
     }
     if (bytes[0] != packetType) {
-      throw ArgumentError(
-          "Data packet's packet type (${bytes[0]}) does not match dataPacket($packetType)");
+      throw ArgumentError("Data packet's packet type (${bytes[0]}) does not match dataPacket($packetType)");
     }
   }
 
-  static DataFrame parse(List<Sensors> enabledSensors, Uint8List data) =>
-      DataFrame(enabledSensors, data);
+  static DataFrame parse(List<Sensors> enabledSensors, Uint8List data) => DataFrame(enabledSensors, data);
 
   static DataFrame? tryParse(List<Sensors> enabledSensors, Uint8List data) {
     try {
@@ -166,8 +160,7 @@ class DataFrame {
   @override
   bool operator ==(covariant DataFrame other) {
     if (identical(this, other)) return true;
-    return listEquals(enabledSensors, other.enabledSensors) &&
-        listEquals(packetBytes, other.packetBytes);
+    return listEquals(enabledSensors, other.enabledSensors) && listEquals(packetBytes, other.packetBytes);
   }
 }
 
@@ -210,8 +203,7 @@ class SensorData {
       rawData = parsedDataPacket(rawBytes);
       dataLoaded = true;
     } else {
-      throw Exception(
-          "$sensorType packet length (${rawBytes.length} is not the same as"
+      throw Exception("$sensorType packet length (${rawBytes.length} is not the same as"
           " Sensor type ($sensorType) length (${sensorType.getPacketSize()})");
     }
 
@@ -304,8 +296,7 @@ class SensorData {
     Map<String, num> calibratedData = {};
     switch (sensorType) {
       case Sensors.dataTimestamp:
-        var timestampMs =
-            (rawData["Timestamp"] ?? 0) + configurationTimestampMs;
+        var timestampMs = (rawData["Timestamp"] ?? 0) + configurationTimestampMs;
         calibratedData["Timestamp"] = timestampMs / 1000;
         break;
       case Sensors.lowNoiseAccel:
@@ -313,8 +304,7 @@ class SensorData {
       case Sensors.gyroscope:
       case Sensors.magnetometer:
         if (imuCalibrationData == null) {
-          throw Exception(
-              "$sensorType cannot be calibrated without [imuCalibrationData]");
+          throw Exception("$sensorType cannot be calibrated without [imuCalibrationData]");
         }
         var rawDataVector = Vector3(
           (rawData["X"] ?? 0).toDouble(),

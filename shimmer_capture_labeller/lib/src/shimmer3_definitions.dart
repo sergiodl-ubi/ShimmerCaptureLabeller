@@ -234,12 +234,16 @@ enum SignalTypes {
 class Signal {
   final String name;
   final SignalTypes type;
-  final int? byteID;
+  final int? rawValue;
+  final Uint8List? rawValues;
+  bool parsed = false;
+  int value = 0;
+  String text = "";
 
-  const Signal(this.name, this.type, {this.byteID});
+  Signal(this.name, this.type, {this.rawValue, this.rawValues});
 
   @override
-  String toString() => "($type) $name signal (ID:$byteID)";
+  String toString() => "($type) $name signal (${text.isNotEmpty ? text : value})";
 
   int getIntFromDataBlob(ByteData blob, idx) {
     switch (type) {
@@ -273,8 +277,6 @@ class Signal {
       case SignalTypes.i64l:
       case SignalTypes.i64b:
         return blob.getInt64(idx, type.endianness);
-      default:
-        return 0;
     }
   }
 
