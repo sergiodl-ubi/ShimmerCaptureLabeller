@@ -1,7 +1,15 @@
+import 'dart:convert';
+import 'dart:io';
+import 'dart:typed_data';
 import 'package:flutter/foundation.dart';
 import 'package:vector_math/vector_math.dart';
+import '../tools/logging.dart';
+
+DebugPrintCallback debugPrint = customDebugPrint("Shimmer3Definitions", true);
 
 // ########### Shimmer3 BT Protocol ##########
+
+const shimmer3ByteStringMaxLength = 255;
 
 enum MessageCodes {
   // Stream and Logging
@@ -160,12 +168,15 @@ enum MessageCodes {
   // Device Information
   deviceVersion(0x25),
   getFWVersion(0x2E),
-  fwVersion(0x2F, responseSignals: [
-    ("FirmwareID", SignalTypes.u16l),
-    ("Major", SignalTypes.u16l),
-    ("Minor", SignalTypes.u8),
-    ("RC", SignalTypes.u8),
-  ]),
+  fwVersion(
+    0x2F,
+    responseSignals: [
+      Signals.fwVersionIDResponse,
+      Signals.fwMajorResponse,
+      Signals.fwMinorResponse,
+      Signals.fwRCResponse,
+    ],
+  ),
   uniqueSerial(0x3D),
   getUniqueSerial(0x3E),
   getDeviceVersion(0x3F),
@@ -175,11 +186,10 @@ enum MessageCodes {
   dummyCommand(0x96),
   getBluetoothVersionString(0xA1),
   bluetoothVersionString(0xA2),
-  acknowledged(0xFF),
-  ;
+  acknowledged(0xFF);
 
   final int value;
-  final List<(String, SignalTypes)>? responseSignals;
+  final List<Signals>? responseSignals;
 
   const MessageCodes(this.value, {this.responseSignals});
 
@@ -197,7 +207,7 @@ enum MessageCodes {
   }
 }
 
-enum SignalTypes {
+enum SignalIntTypes {
   u8(1, Endian.big),
   i8(1, Endian.big),
   u12l(2, Endian.little),
@@ -219,115 +229,186 @@ enum SignalTypes {
   u64l(8, Endian.little),
   u64b(8, Endian.big),
   i64l(8, Endian.little),
-  i64b(8, Endian.big),
-  ;
+  i64b(8, Endian.big);
 
   final int byteSize;
   final Endian endianness;
 
-  const SignalTypes(this.byteSize, this.endianness);
+  const SignalIntTypes(this.byteSize, this.endianness);
 
   @override
   String toString() => name;
 }
 
 class Signal {
-  final String name;
-  final SignalTypes type;
-  final int? rawValue;
-  final Uint8List? rawValues;
-  bool parsed = false;
-  int value = 0;
-  String text = "";
+  final Signals type;
+  late SignalIntTypes intType;
+  late String name;
+  late int? value;
+  late String? text;
+  late ByteData blob;
 
-  Signal(this.name, this.type, {this.rawValue, this.rawValues});
-
-  @override
-  String toString() => "($type) $name signal (${text.isNotEmpty ? text : value})";
-
-  int getIntFromDataBlob(ByteData blob, idx) {
-    switch (type) {
-      case SignalTypes.u8:
-        return blob.getUint8(idx);
-      case SignalTypes.i8:
-        return blob.getInt8(idx);
-      case SignalTypes.u12l:
-      case SignalTypes.u12b:
-      case SignalTypes.u16l:
-      case SignalTypes.u16b:
-        return blob.getUint16(idx, type.endianness);
-      case SignalTypes.i12l:
-      case SignalTypes.i12b:
-      case SignalTypes.i16l:
-      case SignalTypes.i16b:
-        return blob.getInt16(idx, type.endianness);
-      case SignalTypes.u24l:
-      case SignalTypes.u24b:
-      case SignalTypes.u32l:
-      case SignalTypes.u32b:
-        return blob.getUint32(idx, type.endianness);
-      case SignalTypes.i24l:
-      case SignalTypes.i24b:
-      case SignalTypes.i32l:
-      case SignalTypes.i32b:
-        return blob.getInt32(idx, type.endianness);
-      case SignalTypes.u64l:
-      case SignalTypes.u64b:
-        return blob.getUint64(idx, type.endianness);
-      case SignalTypes.i64l:
-      case SignalTypes.i64b:
-        return blob.getInt64(idx, type.endianness);
+  Signal(this.type, {this.value, this.text}) {
+    intType = type.type;
+    name = type.name;
+    if (text != null) {
+      blob = getBlob
     }
   }
 
-  String getStringFrom(ByteData blob) {}
+  Signal fromByteData(Signals type, ByteData byteData) {
+    if (type.processingMethod == ProcessingMethods.ascii) {
+      text = getStringFromBlob(byteData);
+      return Signal(type, text: text);
+    }
+    value = getIntFromBlob(intType, byteData, 0);
+    return Signal(type, value: value);
+  }
+
+  @override
+  String toString() => "($intType) $name signal (${text?.isNotEmpty ?? false ? text : value})";
+
+  static int getIntFromBlob(SignalIntTypes intType, ByteData blob, idx) {
+    switch (intType) {
+      case SignalIntTypes.u8:
+        return blob.getUint8(idx);
+      case SignalIntTypes.i8:
+        return blob.getInt8(idx);
+      case SignalIntTypes.u12l:
+      case SignalIntTypes.u12b:
+      case SignalIntTypes.u16l:
+      case SignalIntTypes.u16b:
+        return blob.getUint16(idx, intType.endianness);
+      case SignalIntTypes.i12l:
+      case SignalIntTypes.i12b:
+      case SignalIntTypes.i16l:
+      case SignalIntTypes.i16b:
+        return blob.getInt16(idx, intType.endianness);
+      case SignalIntTypes.u24l:
+      case SignalIntTypes.u24b:
+      case SignalIntTypes.u32l:
+      case SignalIntTypes.u32b:
+        return blob.getUint32(idx, intType.endianness);
+      case SignalIntTypes.i24l:
+      case SignalIntTypes.i24b:
+      case SignalIntTypes.i32l:
+      case SignalIntTypes.i32b:
+        return blob.getInt32(idx, intType.endianness);
+      case SignalIntTypes.u64l:
+      case SignalIntTypes.u64b:
+        return blob.getUint64(idx, intType.endianness);
+      case SignalIntTypes.i64l:
+      case SignalIntTypes.i64b:
+        return blob.getInt64(idx, intType.endianness);
+    }
+  }
+
+  static ByteData getBlobFromInt(SignalIntTypes intType, int value) {
+    var blob = ByteData(intType.byteSize);
+    switch (intType) {
+      case SignalIntTypes.u8:
+        blob.setUint8(0, value);
+        break;
+      case SignalIntTypes.i8:
+        blob.setInt8(0, value);
+        break;
+      case SignalIntTypes.u12l:
+      case SignalIntTypes.u12b:
+      case SignalIntTypes.u16l:
+      case SignalIntTypes.u16b:
+        blob.setUint16(0, value, intType.endianness);
+        break;
+      case SignalIntTypes.i12l:
+      case SignalIntTypes.i12b:
+      case SignalIntTypes.i16l:
+      case SignalIntTypes.i16b:
+        blob.setInt16(0, value, intType.endianness);
+        break;
+      case SignalIntTypes.u24l:
+      case SignalIntTypes.u24b:
+      case SignalIntTypes.u32l:
+      case SignalIntTypes.u32b:
+        blob.setUint32(0, value, intType.endianness);
+        break;
+      case SignalIntTypes.i24l:
+      case SignalIntTypes.i24b:
+      case SignalIntTypes.i32l:
+      case SignalIntTypes.i32b:
+        blob.setInt32(0, value, intType.endianness);
+        break;
+      case SignalIntTypes.u64l:
+      case SignalIntTypes.u64b:
+        blob.setUint64(0, value, intType.endianness);
+        break;
+      case SignalIntTypes.i64l:
+      case SignalIntTypes.i64b:
+        blob.setInt64(0, value, intType.endianness);
+        break;
+    }
+    return blob;
+  }
+
+  static String getStringFromBlob(ByteData blob) {
+    var length = blob.getUint8(0);
+    var packetStringLength = blob.lengthInBytes - 1;
+    if (length > packetStringLength) {
+      debugPrint(
+        "String length found in idx(0) of response packet ($length) is"
+        " longer than information in response packet ($packetStringLength)",
+      );
+      length = packetStringLength;
+    }
+    var charBuffer = blob.buffer.asUint8List(1, length);
+    return latin1.decode(charBuffer.toList(), allowInvalid: true);
+  }
+
+  static ByteData getBlobFromString(String text) {
+    if (text.length > shimmer3ByteStringMaxLength) {
+      throw ArgumentError(
+          "This string is too long (${text.length}) to be converted into a Shimmer3 compatible blob."
+          " Shimmer3 ByteString Max Length = $shimmer3ByteStringMaxLength");
+    }
+    var b = BytesBuilder();
+    b.addByte(text.length);
+    b.add(latin1.encode(text));
+    return b.toBytes().buffer.asByteData();
+  }
 }
 
-enum ProcessingMethods {
-  adc,
-  ascii,
-  imu,
-  none,
-}
+enum ProcessingMethods { adc, imu, int, ascii, worldClock }
 
 enum Signals {
-  lowNoiseAccelX(SignalTypes.u12l, processingMethod: ProcessingMethods.imu, byteID: 0x00),
-  lowNoiseAccelY(SignalTypes.u12l, processingMethod: ProcessingMethods.imu, byteID: 0x01),
-  lowNoiseAccelZ(SignalTypes.u12l, processingMethod: ProcessingMethods.imu, byteID: 0x02),
-  wideRangeAccelX(SignalTypes.i16l, processingMethod: ProcessingMethods.imu, byteID: 0x04),
-  wideRangeAccelY(SignalTypes.i16l, processingMethod: ProcessingMethods.imu, byteID: 0x05),
-  wideRangeAccelZ(SignalTypes.i16l, processingMethod: ProcessingMethods.imu, byteID: 0x06),
-  gyroscopeX(SignalTypes.i16b, processingMethod: ProcessingMethods.imu, byteID: 0x0A),
-  gyroscopeY(SignalTypes.i16b, processingMethod: ProcessingMethods.imu, byteID: 0x0B),
-  gyroscopeZ(SignalTypes.i16b, processingMethod: ProcessingMethods.imu, byteID: 0x0C),
-  magnetometerX(SignalTypes.i16l, processingMethod: ProcessingMethods.imu, byteID: 0x07),
-  magnetometerY(SignalTypes.i16l, processingMethod: ProcessingMethods.imu, byteID: 0x08),
-  magnetometerZ(SignalTypes.i16l, processingMethod: ProcessingMethods.imu, byteID: 0x09),
-  gsrADC(SignalTypes.u16l, processingMethod: ProcessingMethods.adc, byteID: 0x1C),
-  batteryADC(SignalTypes.u12l, processingMethod: ProcessingMethods.adc, byteID: 0x03),
-  ppgADC(SignalTypes.u12l, processingMethod: ProcessingMethods.adc, byteID: 0x12),
-  pressure(SignalTypes.u16b, processingMethod: ProcessingMethods.adc, byteID: 0x1a),
-  temperature(SignalTypes.u24b, processingMethod: ProcessingMethods.adc, byteID: 0x1b),
-  dataTimestamp(SignalTypes.u24b),
-  fwVersionIDResponse(SignalTypes.u16l),
-  fwMajorResponse(SignalTypes.u16l),
-  fwMinorResponse(SignalTypes.u8),
-  fwRCResponse(SignalTypes.u8),
-  ;
+  lowNoiseAccelX(SignalIntTypes.u12l, processingMethod: ProcessingMethods.imu, byteID: 0x00),
+  lowNoiseAccelY(SignalIntTypes.u12l, processingMethod: ProcessingMethods.imu, byteID: 0x01),
+  lowNoiseAccelZ(SignalIntTypes.u12l, processingMethod: ProcessingMethods.imu, byteID: 0x02),
+  wideRangeAccelX(SignalIntTypes.i16l, processingMethod: ProcessingMethods.imu, byteID: 0x04),
+  wideRangeAccelY(SignalIntTypes.i16l, processingMethod: ProcessingMethods.imu, byteID: 0x05),
+  wideRangeAccelZ(SignalIntTypes.i16l, processingMethod: ProcessingMethods.imu, byteID: 0x06),
+  gyroscopeX(SignalIntTypes.i16b, processingMethod: ProcessingMethods.imu, byteID: 0x0A),
+  gyroscopeY(SignalIntTypes.i16b, processingMethod: ProcessingMethods.imu, byteID: 0x0B),
+  gyroscopeZ(SignalIntTypes.i16b, processingMethod: ProcessingMethods.imu, byteID: 0x0C),
+  magnetometerX(SignalIntTypes.i16l, processingMethod: ProcessingMethods.imu, byteID: 0x07),
+  magnetometerY(SignalIntTypes.i16l, processingMethod: ProcessingMethods.imu, byteID: 0x08),
+  magnetometerZ(SignalIntTypes.i16l, processingMethod: ProcessingMethods.imu, byteID: 0x09),
+  gsrADC(SignalIntTypes.u16l, processingMethod: ProcessingMethods.adc, byteID: 0x1C),
+  batteryADC(SignalIntTypes.u12l, processingMethod: ProcessingMethods.adc, byteID: 0x03),
+  ppgADC(SignalIntTypes.u12l, processingMethod: ProcessingMethods.adc, byteID: 0x12),
+  pressure(SignalIntTypes.u16b, processingMethod: ProcessingMethods.adc, byteID: 0x1a),
+  temperature(SignalIntTypes.u24b, processingMethod: ProcessingMethods.adc, byteID: 0x1b),
+  dataTimestamp(SignalIntTypes.u24b),
+  fwVersionIDResponse(SignalIntTypes.u16l),
+  fwMajorResponse(SignalIntTypes.u16l),
+  fwMinorResponse(SignalIntTypes.u8),
+  fwRCResponse(SignalIntTypes.u8);
 
-  final SignalTypes type;
+  final SignalIntTypes type;
   final ProcessingMethods processingMethod;
   final int? byteID;
 
-  const Signals(this.type, {this.processingMethod = ProcessingMethods.none, this.byteID});
+  const Signals(this.type, {this.processingMethod = ProcessingMethods.int, this.byteID});
 }
 
-const Set imuSensors = {
-  Sensors.lowNoiseAccel,
-  Sensors.wideRangeAccel,
-  Sensors.gyroscope,
-  Sensors.magnetometer,
-};
+const Set imuSensors = {Sensors.lowNoiseAccel, Sensors.wideRangeAccel, Sensors.gyroscope, Sensors.magnetometer};
 
 enum Sensors {
   dataTimestamp(0, [Signals.dataTimestamp]),
@@ -338,8 +419,7 @@ enum Sensors {
   gsr(18, [Signals.gsrADC]),
   battery(13, [Signals.batteryADC]),
   ppg(8, [Signals.ppgADC]),
-  pressureTemp(2, [Signals.pressure, Signals.pressure]),
-  ;
+  pressureTemp(2, [Signals.pressure, Signals.pressure]);
 
   final int enableBitShift;
   final List<Signals> signals;
@@ -366,8 +446,7 @@ enum ExpansionBoards {
   exgUnified(0x2F),
   gsrUnified(0x30),
   bridgeAmpUnified(0x31),
-  shimmer3EXGExtended(0x3B),
-  ;
+  shimmer3EXGExtended(0x3B);
 
   final int id;
 
@@ -382,9 +461,9 @@ class IMUCalibrationData {
   final List<double> _alignment;
 
   const IMUCalibrationData(List<double> offset3, List<double> sensitivity3x3, List<double> alignment3x3)
-      : _offset = offset3,
-        _sensitivity = sensitivity3x3,
-        _alignment = alignment3x3;
+    : _offset = offset3,
+      _sensitivity = sensitivity3x3,
+      _alignment = alignment3x3;
 
   Vector3 get offset => Vector3.array(_offset);
 
@@ -414,117 +493,76 @@ class BMP280CalibrationData {
 }
 
 enum IMUDefaultCalibrations {
-  lowNoiseAccelKXRB52042(IMUCalibrationData(
-    [2047, 2047, 2047],
-    [83, 0, 0, 0, 83, 0, 0, 0, 83],
-    [0, -1, 0, -1, 0, 0, 0, 0, -1],
-  )),
-  lowNoiseAccelKXTC92050(IMUCalibrationData(
-    [2053, 2053, 2053],
-    [92, 0, 0, 0, 92, 0, 0, 0, 92],
-    [0, -1, 0, -1, 0, 0, 0, 0, -1],
-  )),
-  wideRangeAccelLSM303DLHC_2G(IMUCalibrationData(
-    [0, 0, 0],
-    [1631, 0, 0, 0, 1631, 0, 0, 0, 1631],
-    [-1, 0, 0, 0, 1, 0, 0, 0, -1],
-  )),
-  wideRangeAccelLSM303DLHC_4G(IMUCalibrationData(
-    [0, 0, 0],
-    [815, 0, 0, 0, 815, 0, 0, 0, 815],
-    [-1, 0, 0, 0, 1, 0, 0, 0, -1],
-  )),
-  wideRangeAccelLSM303DLHC_8G(IMUCalibrationData(
-    [0, 0, 0],
-    [408, 0, 0, 0, 408, 0, 0, 0, 408],
-    [-1, 0, 0, 0, 1, 0, 0, 0, -1],
-  )),
-  wideRangeAccelLSM303DLHC_16G(IMUCalibrationData(
-    [0, 0, 0],
-    [135, 0, 0, 0, 135, 0, 0, 0, 135],
-    [-1, 0, 0, 0, 1, 0, 0, 0, -1],
-  )),
-  wideRangeAccelLSM303AHTR_2G(IMUCalibrationData(
-    [0, 0, 0],
-    [1671, 0, 0, 0, 1671, 0, 0, 0, 1671],
-    [0, -1, 0, 1, 0, 0, 0, 0, -1],
-  )),
-  wideRangeAccelLSM303AHTR_4G(IMUCalibrationData(
-    [0, 0, 0],
-    [836, 0, 0, 0, 836, 0, 0, 0, 836],
-    [0, -1, 0, 1, 0, 0, 0, 0, -1],
-  )),
-  wideRangeAccelLSM303AHTR_8G(IMUCalibrationData(
-    [0, 0, 0],
-    [418, 0, 0, 0, 418, 0, 0, 0, 418],
-    [0, -1, 0, 1, 0, 0, 0, 0, -1],
-  )),
-  wideRangeAccelLSM303AHTR_16G(IMUCalibrationData(
-    [0, 0, 0],
-    [209, 0, 0, 0, 209, 0, 0, 0, 209],
-    [0, -1, 0, 1, 0, 0, 0, 0, -1],
-  )),
-  gyroscopeMPU910_250DPS(IMUCalibrationData(
-    [0, 0, 0],
-    [131, 0, 0, 0, 131, 0, 0, 0, 131],
-    [0, -1, 0, -1, 0, 0, 0, 0, -1],
-  )),
-  gyroscopeMPU910_500DPS(IMUCalibrationData(
-    [0, 0, 0],
-    [65.5, 0, 0, 0, 65.5, 0, 0, 0, 65.5],
-    [0, -1, 0, -1, 0, 0, 0, 0, -1],
-  )),
-  gyroscopeMPU910_1000DPS(IMUCalibrationData(
-    [0, 0, 0],
-    [32.8, 0, 0, 0, 32.8, 0, 0, 0, 32.8],
-    [0, -1, 0, -1, 0, 0, 0, 0, -1],
-  )),
-  gyroscopeMPU910_2000DPS(IMUCalibrationData(
-    [0, 0, 0],
-    [16.4, 0, 0, 0, 16.4, 0, 0, 0, 16.4],
-    [0, -1, 0, -1, 0, 0, 0, 0, -1],
-  )),
-  magnetometerLSM303DLHC_1_3Ga(IMUCalibrationData(
-    [0, 0, 0],
-    [1100, 0, 0, 0, 1100, 0, 0, 0, 1100],
-    [-1, 0, 0, 0, 1, 0, 0, 0, -1],
-  )),
-  magnetometerLSM303DLHC_1_9Ga(IMUCalibrationData(
-    [0, 0, 0],
-    [855, 0, 0, 0, 855, 0, 0, 0, 855],
-    [-1, 0, 0, 0, 1, 0, 0, 0, -1],
-  )),
-  magnetometerLSM303DLHC_2_5Ga(IMUCalibrationData(
-    [0, 0, 0],
-    [670, 0, 0, 0, 670, 0, 0, 0, 670],
-    [-1, 0, 0, 0, 1, 0, 0, 0, -1],
-  )),
-  magnetometerLSM303DLHC_4_0Ga(IMUCalibrationData(
-    [0, 0, 0],
-    [450, 0, 0, 0, 450, 0, 0, 0, 450],
-    [-1, 0, 0, 0, 1, 0, 0, 0, -1],
-  )),
-  magnetometerLSM303DLHC_4_7Ga(IMUCalibrationData(
-    [0, 0, 0],
-    [400, 0, 0, 0, 400, 0, 0, 0, 400], // Taken from LSM303DLHC datasheet
-    [-1, 0, 0, 0, 1, 0, 0, 0, -1],
-  )),
-  magnetometerLSM303DLHC_5_6Ga(IMUCalibrationData(
-    [0, 0, 0],
-    [330, 0, 0, 0, 330, 0, 0, 0, 330],
-    [-1, 0, 0, 0, 1, 0, 0, 0, -1],
-  )),
-  magnetometerLSM303DLHC_8_1Ga(IMUCalibrationData(
-    [0, 0, 0],
-    [230, 0, 0, 0, 230, 0, 0, 0, 230],
-    [-1, 0, 0, 0, 1, 0, 0, 0, -1],
-  )),
-  magnetometerLSM303AHTR_49Ga(IMUCalibrationData(
-    [0, 0, 0],
-    [667, 0, 0, 0, 667, 0, 0, 0, 667],
-    [0, -1, 0, 1, 0, 0, 0, 0, -1],
-  )),
-  ;
+  lowNoiseAccelKXRB52042(
+    IMUCalibrationData([2047, 2047, 2047], [83, 0, 0, 0, 83, 0, 0, 0, 83], [0, -1, 0, -1, 0, 0, 0, 0, -1]),
+  ),
+  lowNoiseAccelKXTC92050(
+    IMUCalibrationData([2053, 2053, 2053], [92, 0, 0, 0, 92, 0, 0, 0, 92], [0, -1, 0, -1, 0, 0, 0, 0, -1]),
+  ),
+  wideRangeAccelLSM303DLHC_2G(
+    IMUCalibrationData([0, 0, 0], [1631, 0, 0, 0, 1631, 0, 0, 0, 1631], [-1, 0, 0, 0, 1, 0, 0, 0, -1]),
+  ),
+  wideRangeAccelLSM303DLHC_4G(
+    IMUCalibrationData([0, 0, 0], [815, 0, 0, 0, 815, 0, 0, 0, 815], [-1, 0, 0, 0, 1, 0, 0, 0, -1]),
+  ),
+  wideRangeAccelLSM303DLHC_8G(
+    IMUCalibrationData([0, 0, 0], [408, 0, 0, 0, 408, 0, 0, 0, 408], [-1, 0, 0, 0, 1, 0, 0, 0, -1]),
+  ),
+  wideRangeAccelLSM303DLHC_16G(
+    IMUCalibrationData([0, 0, 0], [135, 0, 0, 0, 135, 0, 0, 0, 135], [-1, 0, 0, 0, 1, 0, 0, 0, -1]),
+  ),
+  wideRangeAccelLSM303AHTR_2G(
+    IMUCalibrationData([0, 0, 0], [1671, 0, 0, 0, 1671, 0, 0, 0, 1671], [0, -1, 0, 1, 0, 0, 0, 0, -1]),
+  ),
+  wideRangeAccelLSM303AHTR_4G(
+    IMUCalibrationData([0, 0, 0], [836, 0, 0, 0, 836, 0, 0, 0, 836], [0, -1, 0, 1, 0, 0, 0, 0, -1]),
+  ),
+  wideRangeAccelLSM303AHTR_8G(
+    IMUCalibrationData([0, 0, 0], [418, 0, 0, 0, 418, 0, 0, 0, 418], [0, -1, 0, 1, 0, 0, 0, 0, -1]),
+  ),
+  wideRangeAccelLSM303AHTR_16G(
+    IMUCalibrationData([0, 0, 0], [209, 0, 0, 0, 209, 0, 0, 0, 209], [0, -1, 0, 1, 0, 0, 0, 0, -1]),
+  ),
+  gyroscopeMPU910_250DPS(
+    IMUCalibrationData([0, 0, 0], [131, 0, 0, 0, 131, 0, 0, 0, 131], [0, -1, 0, -1, 0, 0, 0, 0, -1]),
+  ),
+  gyroscopeMPU910_500DPS(
+    IMUCalibrationData([0, 0, 0], [65.5, 0, 0, 0, 65.5, 0, 0, 0, 65.5], [0, -1, 0, -1, 0, 0, 0, 0, -1]),
+  ),
+  gyroscopeMPU910_1000DPS(
+    IMUCalibrationData([0, 0, 0], [32.8, 0, 0, 0, 32.8, 0, 0, 0, 32.8], [0, -1, 0, -1, 0, 0, 0, 0, -1]),
+  ),
+  gyroscopeMPU910_2000DPS(
+    IMUCalibrationData([0, 0, 0], [16.4, 0, 0, 0, 16.4, 0, 0, 0, 16.4], [0, -1, 0, -1, 0, 0, 0, 0, -1]),
+  ),
+  magnetometerLSM303DLHC_1_3Ga(
+    IMUCalibrationData([0, 0, 0], [1100, 0, 0, 0, 1100, 0, 0, 0, 1100], [-1, 0, 0, 0, 1, 0, 0, 0, -1]),
+  ),
+  magnetometerLSM303DLHC_1_9Ga(
+    IMUCalibrationData([0, 0, 0], [855, 0, 0, 0, 855, 0, 0, 0, 855], [-1, 0, 0, 0, 1, 0, 0, 0, -1]),
+  ),
+  magnetometerLSM303DLHC_2_5Ga(
+    IMUCalibrationData([0, 0, 0], [670, 0, 0, 0, 670, 0, 0, 0, 670], [-1, 0, 0, 0, 1, 0, 0, 0, -1]),
+  ),
+  magnetometerLSM303DLHC_4_0Ga(
+    IMUCalibrationData([0, 0, 0], [450, 0, 0, 0, 450, 0, 0, 0, 450], [-1, 0, 0, 0, 1, 0, 0, 0, -1]),
+  ),
+  magnetometerLSM303DLHC_4_7Ga(
+    IMUCalibrationData(
+      [0, 0, 0],
+      [400, 0, 0, 0, 400, 0, 0, 0, 400], // Taken from LSM303DLHC datasheet
+      [-1, 0, 0, 0, 1, 0, 0, 0, -1],
+    ),
+  ),
+  magnetometerLSM303DLHC_5_6Ga(
+    IMUCalibrationData([0, 0, 0], [330, 0, 0, 0, 330, 0, 0, 0, 330], [-1, 0, 0, 0, 1, 0, 0, 0, -1]),
+  ),
+  magnetometerLSM303DLHC_8_1Ga(
+    IMUCalibrationData([0, 0, 0], [230, 0, 0, 0, 230, 0, 0, 0, 230], [-1, 0, 0, 0, 1, 0, 0, 0, -1]),
+  ),
+  magnetometerLSM303AHTR_49Ga(
+    IMUCalibrationData([0, 0, 0], [667, 0, 0, 0, 667, 0, 0, 0, 667], [0, -1, 0, 1, 0, 0, 0, 0, -1]),
+  );
 
   final IMUCalibrationData vectors;
 
@@ -534,12 +572,7 @@ enum IMUDefaultCalibrations {
 // ########### Sensors Parameters ##########
 
 // Units: Ohms, Default: 4 - Auto
-const Map<int, int> gsrRangeResistor = {
-  0: 40200,
-  1: 287000,
-  2: 1000000,
-  3: 3300000,
-};
+const Map<int, int> gsrRangeResistor = {0: 40200, 1: 287000, 2: 1000000, 3: 3300000};
 
 const Map<int, (double, double)> gsrResistanceRange = {
   0: (8000, 63000),
@@ -565,42 +598,20 @@ const Map<int, int> btBaudRate = {
 };
 
 // Units: dps, Default: 0 - ±250dps
-const Map<int, int> mpu9X50GyroRange = {
-  0: 250,
-  1: 500,
-  2: 1000,
-  3: 20000,
-};
+const Map<int, int> mpu9X50GyroRange = {0: 250, 1: 500, 2: 1000, 3: 20000};
 
 // Default: 0 - Low pressure resolution
-const Map<int, String> bmpX80PressResolution = {
-  0: "Low",
-  1: "Standard",
-  2: "High",
-  3: "Very High",
-};
+const Map<int, String> bmpX80PressResolution = {0: "Low", 1: "Standard", 2: "High", 3: "Very High"};
 
 // Units: Hz (with decimals for compatibility purposes with LSM303DLHC version)
 // Default: 3 - 100.0Hz
-const Map<int, double> lsm303AHTRMagDataRate = {
-  0: 10.0,
-  1: 20.0,
-  2: 50.0,
-  3: 100.0,
-};
+const Map<int, double> lsm303AHTRMagDataRate = {0: 10.0, 1: 20.0, 2: 50.0, 3: 100.0};
 
 // Units: Ga
-const Map<int, double> lsm303AHTRMagRange = {
-  0: 49.152,
-};
+const Map<int, double> lsm303AHTRMagRange = {0: 49.152};
 
 // Units: g, Default: 0 - ±2.0g
-const Map<int, double> lsm303AHTRAccelRange = {
-  0: 2.0,
-  1: 16.0,
-  2: 4.0,
-  3: 8.0,
-};
+const Map<int, double> lsm303AHTRAccelRange = {0: 2.0, 1: 16.0, 2: 4.0, 3: 8.0};
 
 // Default: 4 - 100.0Hz
 const Map<int, double> lsm303AHTRAccelDataRate = {

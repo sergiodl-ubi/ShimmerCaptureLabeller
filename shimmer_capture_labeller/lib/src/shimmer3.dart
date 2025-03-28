@@ -22,13 +22,15 @@ class ResponseFrame {
   final Uint8List packetBytes;
   late MessageCodes responseType;
   final packetHeaderLength = 2;
+  List<Signal> data = [];
 
   ResponseFrame(this.packetBytes) {
     responseType = _verify(packetBytes);
+    parseDataFrame();
   }
 
   MessageCodes _verify(Uint8List bytes) {
-    if (bytes.length > 2) {
+    if (bytes.length <= 2) {
       throw ArgumentError("Missing response data");
     }
     var ackByte = bytes[0];
@@ -53,7 +55,16 @@ class ResponseFrame {
     }
   }
 
-  void parseDataFrame() {}
+  void parseDataFrame() {
+    var idx = 2;
+    for (var signal in responseType.responseSignals!) {
+      data.add(Signal(signal, ByteData.sublistView(packetBytes, idx)));
+      if (signal.processingMethod == ProcessingMethods.ascii) {
+        break;
+      }
+      idx += signal.type.byteSize;
+    }
+  }
 
   @override
   int get hashCode => Object.hash(responseType, packetBytes);
@@ -95,9 +106,10 @@ class DataFrame {
     _verify(enabledSensors, packetBytes);
     if (configurationTimestampMs != 0 || imuCalibrationData != null || bmp280calibrationData != null) {
       parseDataFrame(
-          configTimestampMs: configurationTimestampMs,
-          imuCalibrationData: imuCalibrationData,
-          bmp280CalibrationData: bmp280calibrationData);
+        configTimestampMs: configurationTimestampMs,
+        imuCalibrationData: imuCalibrationData,
+        bmp280CalibrationData: bmp280calibrationData,
+      );
     }
   }
 
@@ -113,7 +125,8 @@ class DataFrame {
     }
     if (bytes.length != validLength) {
       throw ArgumentError(
-          "Provided data packet length (${bytes.length}) does not match with enabled sensors: $enabledSensors");
+        "Provided data packet length (${bytes.length}) does not match with enabled sensors: $enabledSensors",
+      );
     }
     if (bytes[0] != packetType) {
       throw ArgumentError("Data packet's packet type (${bytes[0]}) does not match dataPacket($packetType)");
@@ -203,8 +216,10 @@ class SensorData {
       rawData = parsedDataPacket(rawBytes);
       dataLoaded = true;
     } else {
-      throw Exception("$sensorType packet length (${rawBytes.length} is not the same as"
-          " Sensor type ($sensorType) length (${sensorType.getPacketSize()})");
+      throw Exception(
+        "$sensorType packet length (${rawBytes.length} is not the same as"
+        " Sensor type ($sensorType) length (${sensorType.getPacketSize()})",
+      );
     }
 
     if (dataLoaded) {
@@ -254,10 +269,7 @@ class SensorData {
   ///
   /// Calibration follows [alignment]^(-1) • [sensitivity]^(-1) • ([rawData] - [offset])
   /// and returns a properly calibrated [Vector3] vector.
-  Vector3 calibratedIMUData(
-    Vector3 rawData,
-    (Vector3, Matrix3, Matrix3) imuCalibrationData,
-  ) {
+  Vector3 calibratedIMUData(Vector3 rawData, (Vector3, Matrix3, Matrix3) imuCalibrationData) {
     var (offset, sensitivity, alignment) = imuCalibrationData;
     var calibratedData = Vector3(0, 0, 0);
     var centeredData = rawData - offset;
@@ -390,7 +402,7 @@ class Shimmer3Event {
   Shimmer3Event(this.message, {DateTime? datetime}) : datetime = DateTime.now();
 
   Shimmer3Event.fromMilliseconds(this.message, int timestamp)
-      : datetime = DateTime.fromMillisecondsSinceEpoch(timestamp);
+    : datetime = DateTime.fromMillisecondsSinceEpoch(timestamp);
 
   @override
   String toString() => "${datetime.toIso8601String()}: $message";
