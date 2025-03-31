@@ -1,5 +1,4 @@
 import 'dart:convert';
-import 'dart:io';
 import 'dart:typed_data';
 import 'package:flutter/foundation.dart';
 import 'package:vector_math/vector_math.dart';
@@ -46,7 +45,7 @@ enum MessageCodes {
   getAllCalibration(0x2C),
   allCalibration(0x2D),
   setChargeStatusLED(0x30),
-  chargeStatusLED(0x31),
+  chargeStatusLED(0x31, responseSignals: [Signals.chargeStatusLEDResponse]),
   getChargeStatusLED(0x32),
   resetToDefaultConfiguration(0x5A),
   resetCalibrationValue(0x5B),
@@ -166,7 +165,7 @@ enum MessageCodes {
   getBMP280CalibrationCoefficients(0xA0),
 
   // Device Information
-  deviceVersion(0x25),
+  deviceVersion(0x25, responseSignals: [Signals.devVersionResponse]),
   getFWVersion(0x2E),
   fwVersion(
     0x2F,
@@ -181,11 +180,19 @@ enum MessageCodes {
   getUniqueSerial(0x3E),
   getDeviceVersion(0x3F),
   setExpansionBoardID(0x64),
-  expansionBoardID(0x65),
+  expansionBoardID(
+    0x65,
+    responseSignals: [
+      Signals.expBoardIDLengthResponse,
+      Signals.expBoardIDTypeResponse,
+      Signals.expBoardIDRevisionResponse,
+      Signals.expBoardIDSpeRevisionResponse,
+    ],
+  ),
   getExpansionBoardID(0x66),
   dummyCommand(0x96),
   getBluetoothVersionString(0xA1),
-  bluetoothVersionString(0xA2),
+  bluetoothVersionString(0xA2, responseSignals: [Signals.bluetoothVersionResponse]),
   acknowledged(0xFF);
 
   final int value;
@@ -229,7 +236,9 @@ enum SignalIntTypes {
   u64l(8, Endian.little),
   u64b(8, Endian.big),
   i64l(8, Endian.little),
-  i64b(8, Endian.big);
+  i64b(8, Endian.big),
+  noByteShift(0, Endian.little),
+  byteShift(1, Endian.little);
 
   final int byteSize;
   final Endian endianness;
@@ -246,66 +255,74 @@ class Signal {
   late String name;
   late int? value;
   late String? text;
-  late ByteData blob;
+  late double? float;
+  late ByteData byteData;
 
-  Signal(this.type, {this.value, this.text}) {
+  Signal(this.type, {this.value, this.text, this.float}) {
     intType = type.type;
     name = type.name;
-    if (text != null) {
-      blob = getBlob
+    if (text != null && value != null && float != null) {
+      throw ArgumentError("You need to set a text or a integer or a float value");
     }
+    byteData = text != null ? getByteDataFromString(text!) : getByteDataFromInt(intType, value!);
   }
 
-  Signal fromByteData(Signals type, ByteData byteData) {
-    if (type.processingMethod == ProcessingMethods.ascii) {
-      text = getStringFromBlob(byteData);
+  Signal fromByteData(Signals type, ByteData blob) {
+    byteData = blob;
+    if (type.process == ProcessingMethods.tickSamplingRate) {}
+    if (type.process == ProcessingMethods.ascii) {
+      text = getStringFromByteData(blob);
       return Signal(type, text: text);
     }
-    value = getIntFromBlob(intType, byteData, 0);
+    value = getIntFromByteData(intType, blob, 0);
     return Signal(type, value: value);
   }
 
   @override
   String toString() => "($intType) $name signal (${text?.isNotEmpty ?? false ? text : value})";
 
-  static int getIntFromBlob(SignalIntTypes intType, ByteData blob, idx) {
+  static int getIntFromByteData(SignalIntTypes intType, ByteData byteData, idx) {
     switch (intType) {
+      case SignalIntTypes.noByteShift:
+      case SignalIntTypes.byteShift:
       case SignalIntTypes.u8:
-        return blob.getUint8(idx);
+        return byteData.getUint8(idx);
       case SignalIntTypes.i8:
-        return blob.getInt8(idx);
+        return byteData.getInt8(idx);
       case SignalIntTypes.u12l:
       case SignalIntTypes.u12b:
       case SignalIntTypes.u16l:
       case SignalIntTypes.u16b:
-        return blob.getUint16(idx, intType.endianness);
+        return byteData.getUint16(idx, intType.endianness);
       case SignalIntTypes.i12l:
       case SignalIntTypes.i12b:
       case SignalIntTypes.i16l:
       case SignalIntTypes.i16b:
-        return blob.getInt16(idx, intType.endianness);
+        return byteData.getInt16(idx, intType.endianness);
       case SignalIntTypes.u24l:
       case SignalIntTypes.u24b:
       case SignalIntTypes.u32l:
       case SignalIntTypes.u32b:
-        return blob.getUint32(idx, intType.endianness);
+        return byteData.getUint32(idx, intType.endianness);
       case SignalIntTypes.i24l:
       case SignalIntTypes.i24b:
       case SignalIntTypes.i32l:
       case SignalIntTypes.i32b:
-        return blob.getInt32(idx, intType.endianness);
+        return byteData.getInt32(idx, intType.endianness);
       case SignalIntTypes.u64l:
       case SignalIntTypes.u64b:
-        return blob.getUint64(idx, intType.endianness);
+        return byteData.getUint64(idx, intType.endianness);
       case SignalIntTypes.i64l:
       case SignalIntTypes.i64b:
-        return blob.getInt64(idx, intType.endianness);
+        return byteData.getInt64(idx, intType.endianness);
     }
   }
 
-  static ByteData getBlobFromInt(SignalIntTypes intType, int value) {
+  static ByteData getByteDataFromInt(SignalIntTypes intType, int value) {
     var blob = ByteData(intType.byteSize);
     switch (intType) {
+      case SignalIntTypes.noByteShift:
+      case SignalIntTypes.byteShift:
       case SignalIntTypes.u8:
         blob.setUint8(0, value);
         break;
@@ -348,9 +365,9 @@ class Signal {
     return blob;
   }
 
-  static String getStringFromBlob(ByteData blob) {
-    var length = blob.getUint8(0);
-    var packetStringLength = blob.lengthInBytes - 1;
+  static String getStringFromByteData(ByteData byteData) {
+    var length = byteData.getUint8(0);
+    var packetStringLength = byteData.lengthInBytes - 1;
     if (length > packetStringLength) {
       debugPrint(
         "String length found in idx(0) of response packet ($length) is"
@@ -358,15 +375,16 @@ class Signal {
       );
       length = packetStringLength;
     }
-    var charBuffer = blob.buffer.asUint8List(1, length);
+    var charBuffer = byteData.buffer.asUint8List(1, length);
     return latin1.decode(charBuffer.toList(), allowInvalid: true);
   }
 
-  static ByteData getBlobFromString(String text) {
+  static ByteData getByteDataFromString(String text) {
     if (text.length > shimmer3ByteStringMaxLength) {
       throw ArgumentError(
-          "This string is too long (${text.length}) to be converted into a Shimmer3 compatible blob."
-          " Shimmer3 ByteString Max Length = $shimmer3ByteStringMaxLength");
+        "This string is too long (${text.length}) to be converted into a Shimmer3 compatible blob."
+        " Shimmer3 ByteString Max Length = $shimmer3ByteStringMaxLength",
+      );
     }
     var b = BytesBuilder();
     b.addByte(text.length);
@@ -375,37 +393,74 @@ class Signal {
   }
 }
 
-enum ProcessingMethods { adc, imu, int, ascii, worldClock }
+enum ProcessingMethods { adc, imu, int, ascii, clockShift, valueMap, messageCode, tickSamplingRate, bitShift }
 
 enum Signals {
-  lowNoiseAccelX(SignalIntTypes.u12l, processingMethod: ProcessingMethods.imu, byteID: 0x00),
-  lowNoiseAccelY(SignalIntTypes.u12l, processingMethod: ProcessingMethods.imu, byteID: 0x01),
-  lowNoiseAccelZ(SignalIntTypes.u12l, processingMethod: ProcessingMethods.imu, byteID: 0x02),
-  wideRangeAccelX(SignalIntTypes.i16l, processingMethod: ProcessingMethods.imu, byteID: 0x04),
-  wideRangeAccelY(SignalIntTypes.i16l, processingMethod: ProcessingMethods.imu, byteID: 0x05),
-  wideRangeAccelZ(SignalIntTypes.i16l, processingMethod: ProcessingMethods.imu, byteID: 0x06),
-  gyroscopeX(SignalIntTypes.i16b, processingMethod: ProcessingMethods.imu, byteID: 0x0A),
-  gyroscopeY(SignalIntTypes.i16b, processingMethod: ProcessingMethods.imu, byteID: 0x0B),
-  gyroscopeZ(SignalIntTypes.i16b, processingMethod: ProcessingMethods.imu, byteID: 0x0C),
-  magnetometerX(SignalIntTypes.i16l, processingMethod: ProcessingMethods.imu, byteID: 0x07),
-  magnetometerY(SignalIntTypes.i16l, processingMethod: ProcessingMethods.imu, byteID: 0x08),
-  magnetometerZ(SignalIntTypes.i16l, processingMethod: ProcessingMethods.imu, byteID: 0x09),
-  gsrADC(SignalIntTypes.u16l, processingMethod: ProcessingMethods.adc, byteID: 0x1C),
-  batteryADC(SignalIntTypes.u12l, processingMethod: ProcessingMethods.adc, byteID: 0x03),
-  ppgADC(SignalIntTypes.u12l, processingMethod: ProcessingMethods.adc, byteID: 0x12),
-  pressure(SignalIntTypes.u16b, processingMethod: ProcessingMethods.adc, byteID: 0x1a),
-  temperature(SignalIntTypes.u24b, processingMethod: ProcessingMethods.adc, byteID: 0x1b),
-  dataTimestamp(SignalIntTypes.u24b),
-  fwVersionIDResponse(SignalIntTypes.u16l),
-  fwMajorResponse(SignalIntTypes.u16l),
-  fwMinorResponse(SignalIntTypes.u8),
-  fwRCResponse(SignalIntTypes.u8);
+  lowNoiseAccelX(type: SignalIntTypes.u12l, process: ProcessingMethods.imu, byteID: 0x00),
+  lowNoiseAccelY(type: SignalIntTypes.u12l, process: ProcessingMethods.imu, byteID: 0x01),
+  lowNoiseAccelZ(type: SignalIntTypes.u12l, process: ProcessingMethods.imu, byteID: 0x02),
+  wideRangeAccelX(type: SignalIntTypes.i16l, process: ProcessingMethods.imu, byteID: 0x04),
+  wideRangeAccelY(type: SignalIntTypes.i16l, process: ProcessingMethods.imu, byteID: 0x05),
+  wideRangeAccelZ(type: SignalIntTypes.i16l, process: ProcessingMethods.imu, byteID: 0x06),
+  gyroscopeX(type: SignalIntTypes.i16b, process: ProcessingMethods.imu, byteID: 0x0A),
+  gyroscopeY(type: SignalIntTypes.i16b, process: ProcessingMethods.imu, byteID: 0x0B),
+  gyroscopeZ(type: SignalIntTypes.i16b, process: ProcessingMethods.imu, byteID: 0x0C),
+  magnetometerX(type: SignalIntTypes.i16l, process: ProcessingMethods.imu, byteID: 0x07),
+  magnetometerY(type: SignalIntTypes.i16l, process: ProcessingMethods.imu, byteID: 0x08),
+  magnetometerZ(type: SignalIntTypes.i16l, process: ProcessingMethods.imu, byteID: 0x09),
+  gsrADC(type: SignalIntTypes.u16l, process: ProcessingMethods.adc, byteID: 0x1C),
+  batteryADC(type: SignalIntTypes.u12l, process: ProcessingMethods.adc, byteID: 0x03),
+  ppgADC(type: SignalIntTypes.u12l, process: ProcessingMethods.adc, byteID: 0x12),
+  pressure(type: SignalIntTypes.u16b, process: ProcessingMethods.adc, byteID: 0x1a),
+  temperature(type: SignalIntTypes.u24b, process: ProcessingMethods.adc, byteID: 0x1b),
+  dataTimestamp(type: SignalIntTypes.u24b),
+  fwVersionIDResponse(type: SignalIntTypes.u16l),
+  fwMajorResponse(type: SignalIntTypes.u16l),
+  fwMinorResponse,
+  fwRCResponse,
+  devVersionResponse,
+  chargeStatusLEDResponse(process: ProcessingMethods.valueMap, valueMap: chargingStatus),
+  expBoardIDLengthResponse,
+  expBoardIDTypeResponse(process: ProcessingMethods.valueMap, valueMap: expansionBoards),
+  expBoardIDRevisionResponse,
+  expBoardIDSpeRevisionResponse,
+  bluetoothVersionResponse(process: ProcessingMethods.ascii),
+  statusCodeResponse(process: ProcessingMethods.messageCode),
+  statusBTStreamResponse(
+    type: SignalIntTypes.noByteShift,
+    process: ProcessingMethods.bitShift,
+    bitShift: 4,
+    bitMask: 0x10,
+  ),
+  statusSDLogResponse(
+    type: SignalIntTypes.noByteShift,
+    process: ProcessingMethods.bitShift,
+    bitShift: 3,
+    bitMask: 0x08,
+  ),
+  statusSensingResponse(
+    type: SignalIntTypes.noByteShift,
+    process: ProcessingMethods.bitShift,
+    bitShift: 1,
+    bitMask: 0x02,
+  ),
+  statusDockedResponse(type: SignalIntTypes.byteShift, process: ProcessingMethods.bitShift, bitShift: 0, bitMask: 0x01);
 
   final SignalIntTypes type;
-  final ProcessingMethods processingMethod;
+  final ProcessingMethods process;
   final int? byteID;
+  final Map<int, dynamic>? valueMap;
+  final int? bitShift;
+  final int? bitMask;
 
-  const Signals(this.type, {this.processingMethod = ProcessingMethods.int, this.byteID});
+  const Signals({
+    this.type = SignalIntTypes.u8,
+    this.process = ProcessingMethods.int,
+    this.byteID,
+    this.valueMap,
+    this.bitShift,
+    this.bitMask,
+  });
 }
 
 const Set imuSensors = {Sensors.lowNoiseAccel, Sensors.wideRangeAccel, Sensors.gyroscope, Sensors.magnetometer};
@@ -571,6 +626,8 @@ enum IMUDefaultCalibrations {
 
 // ########### Sensors Parameters ##########
 
+double tickSamplingRate(int delayTicks) => 0x8000 / delayTicks;
+
 // Units: Ohms, Default: 4 - Auto
 const Map<int, int> gsrRangeResistor = {0: 40200, 1: 287000, 2: 1000000, 3: 3300000};
 
@@ -634,4 +691,19 @@ const Map<int, String> chargingStatus = {
   0x40: "Full Charge",
   0x80: "Conditioning", // No idea what is conditioning, maybe "Charging"?
   0xC0: "Bad Battery",
+};
+
+const Map<int, String> expansionBoards = {
+  0x08: "Expansion Bridge Amplifier Plus",
+  0x0E: "Expansion GSR Plus",
+  0x1F: "Shimmer3",
+  0x24: "Expansion Proto3 Mini",
+  0x25: "Expansion EXG",
+  0x26: "Expansion Proto3 Deluxe",
+  0x2C: "Expansion Board HighG Accel",
+  0x2E: "Expansion Board GPS",
+  0x2F: "Expansion Board EXG Unified",
+  0x30: "Expansion Board GSR Unified",
+  0x31: "Expansion Board Bridge Amplifier Unified",
+  0x3B: "Shimmer3 EXG Extended",
 };

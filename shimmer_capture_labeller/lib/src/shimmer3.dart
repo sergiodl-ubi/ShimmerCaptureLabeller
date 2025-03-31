@@ -56,12 +56,42 @@ class ResponseFrame {
   }
 
   void parseDataFrame() {
-    var idx = 2;
+    var blob = ByteData.sublistView(packetBytes, 2);
+    var idx = 0;
+    int? value;
+    double? float;
+    String? text;
     for (var signal in responseType.responseSignals!) {
-      data.add(Signal(signal, ByteData.sublistView(packetBytes, idx)));
-      if (signal.processingMethod == ProcessingMethods.ascii) {
-        break;
+      switch (signal.process) {
+        case ProcessingMethods.ascii:
+          text = Signal.getStringFromByteData(blob);
+          break;
+        case ProcessingMethods.valueMap:
+          var mapKey = Signal.getIntFromByteData(signal.type, blob, idx);
+          switch (signal) {
+            case Signals.chargeStatusLEDResponse:
+            case Signals.expBoardIDTypeResponse:
+              text = signal.valueMap![mapKey];
+              break;
+            default:
+              debugPrint("WARNING: Signal ($signal) with valueMap has no parseDataFrame handler");
+              break;
+          }
+          break;
+        case ProcessingMethods.tickSamplingRate:
+          var delayTicks = Signal.getIntFromByteData(signal.type, blob, idx);
+          float = tickSamplingRate(delayTicks);
+          break;
+        case ProcessingMethods.bitShift:
+          var byte = Signal.getIntFromByteData(signal.type, blob, idx) & signal.bitMask!;
+          value = byte >> signal.bitShift!;
+          break;
+        case ProcessingMethods.int:
+        default:
+          value = Signal.getIntFromByteData(signal.type, blob, idx);
+          break;
       }
+      data.add(Signal(signal, text: text, value: value, float: float));
       idx += signal.type.byteSize;
     }
   }
@@ -191,6 +221,7 @@ class SensorData {
   late Uint8List rawBytes;
   Map<String, int> rawData = {};
   Map<String, num> data = {};
+  List<Signal> signalData = [];
   int configurationTimestampMs;
   (Vector3, Matrix3, Matrix3)? imuCalibrationData;
   BMP280CalibrationData? bmp280Coefficients;
@@ -259,7 +290,7 @@ class SensorData {
     var idx = 0;
     var blob = ByteData.sublistView(dataPacket);
     for (var signal in sensorType.signals) {
-      parsedData[signal.name] = signal.getIntFromDataBlob(blob, idx);
+      parsedData[signal.name] = Signal.getIntFromByteData(signal.type, blob, idx);
       idx += signal.type.byteSize;
     }
     return parsedData;
@@ -395,25 +426,68 @@ class SensorData {
   }
 }
 
+enum Shimmer3EventTypes { commandAck, response, data, unknown }
+
 class Shimmer3Event {
-  final DateTime datetime;
   final Uint8List message;
+  late DateTime datetime;
+  late Shimmer3EventTypes type;
+  MessageCodes? responseType;
 
-  Shimmer3Event(this.message, {DateTime? datetime}) : datetime = DateTime.now();
+  Shimmer3Event(this.message, {DateTime? datetime}) {
+    this.datetime = datetime ?? DateTime.now();
+    type = parseType(message);
+    if (type == Shimmer3EventTypes.response) {
+      responseType = messageCodesDictionary[message.elementAt(1)];
+    }
+  }
 
-  Shimmer3Event.fromMilliseconds(this.message, int timestamp)
-    : datetime = DateTime.fromMillisecondsSinceEpoch(timestamp);
+  Shimmer3Event.fromMilliseconds(this.message, int timestamp) {
+    datetime = DateTime.fromMillisecondsSinceEpoch(timestamp);
+    type = parseType(message);
+    if (type == Shimmer3EventTypes.response) {
+      responseType = messageCodesDictionary[message.elementAt(1)];
+    }
+  }
 
   @override
-  String toString() => "${datetime.toIso8601String()}: $message";
+  String toString() => "${datetime.toIso8601String()}: ($type) $message";
 
   @override
-  int get hashCode => Object.hash(datetime, message);
+  int get hashCode => Object.hash(datetime, type, message);
 
   @override
   bool operator ==(covariant Shimmer3Event other) {
     if (identical(this, other)) return true;
-    return datetime == other.datetime && message == other.message;
+    return datetime == other.datetime && message == other.message && type == other.type;
+  }
+
+  static Shimmer3EventTypes parseType(Uint8List message) {
+    var firstByte = message.first;
+    var size = message.length;
+    var eventType = Shimmer3EventTypes.unknown;
+    do {
+      if (size > 4 && MessageCodes.dataPacket.value == firstByte) {
+        eventType = Shimmer3EventTypes.data;
+        break;
+      }
+      if (size == 1 && MessageCodes.acknowledged.value == firstByte) {
+        eventType = Shimmer3EventTypes.commandAck;
+        break;
+      }
+      if (size == 1) {
+        break;
+      }
+      MessageCodes? responseType = messageCodesDictionary[message.elementAt(1)];
+      if (size > 2 && MessageCodes.acknowledged.value == firstByte && responseType != null) {
+        eventType = Shimmer3EventTypes.response;
+        break;
+      }
+    } while (false);
+    if (eventType == Shimmer3EventTypes.unknown) {
+      debugPrint("Shimmer3Event message type could not be identified: $message");
+    }
+    return eventType;
   }
 }
 
@@ -425,7 +499,8 @@ class Shimmer3 {
   bool _streaming = false;
 
   StreamSubscription? _readSubscription;
-  List<Shimmer3Event> receivedEvents = [];
+  List<Shimmer3Event> commandReplies = [];
+  Map<MessageCodes, List<Signal>> deviceConfiguration = {};
   final ackTimeout = 10;
 
   // Device Configuration
@@ -458,8 +533,8 @@ class Shimmer3 {
       }
       var event = Shimmer3Event(buffer);
       debugPrint("Packet received: $event");
-      if (MessageCodes.acknowledged.sameAsMessage(buffer)) {
-        receivedEvents.add(event);
+      if (event.type == Shimmer3EventTypes.commandAck || event.type == Shimmer3EventTypes.response) {
+        commandReplies.add(event);
         return;
       }
       // Stream out the event
@@ -487,39 +562,86 @@ class Shimmer3 {
     return true;
   }
 
-  int flushQueue() {
-    var queueLength = receivedEvents.length;
-    receivedEvents.clear();
+  int flushCommandReplies() {
+    var queueLength = commandReplies.length;
+    commandReplies.clear();
     return queueLength;
   }
 
-  Future<bool> sendCommand(String description, Uint8List payload) async {
+  Future<(bool, Uint8List?)> sendCommand(
+    String description,
+    MessageCodes command, {
+    List<int>? data,
+    MessageCodes? responseType,
+  }) async {
+    bool success = false;
+    Uint8List? responseData;
+    var payloadList = [command.value];
+    if (data != null) {
+      payloadList.addAll(data);
+    }
+    var payload = Uint8List.fromList(payloadList);
     debugPrint("TX $description: $payload");
+    // Send command
     if (!(await sendData(payload))) {
       debugPrint("Failed to $description: data not sent");
-      return false;
+      return (false, null);
     }
-    if (!(await waitForAck(timeout: ackTimeout, reference: description))) {
+    // wait for acknowledge of command
+    (success, responseData) = await waitForAck(timeout: ackTimeout, reference: description, responseType: responseType);
+    if (!success) {
       debugPrint("Failed to $description: ack timeout");
-      return false;
     }
-    return true;
+    return (success, responseData);
   }
 
-  Future<bool> waitForAck({timeout = 10, reference = ""}) async {
+  Future<(bool, Uint8List?)> waitForAck({timeout = 10, reference = "", MessageCodes? responseType}) async {
     var acknowledged = false;
+    Uint8List? byteData;
     var now = DateTime.now().millisecondsSinceEpoch;
     var expirationTime = now + (timeout * 1000);
     while (!acknowledged && !(now > expirationTime)) {
-      if (receivedEvents.isEmpty) {
+      if (commandReplies.isEmpty) {
         await Future.delayed(Duration(milliseconds: 50));
         now = DateTime.now().millisecondsSinceEpoch;
         continue;
       }
-      for (final (idx, event) in receivedEvents.indexed) {
+      for (final (idx, event) in commandReplies.indexed) {
         if (MessageCodes.acknowledged.sameAsMessage(event.message)) {
           acknowledged = true;
-          receivedEvents.removeAt(idx);
+        }
+        if (event.type == Shimmer3EventTypes.response && event.responseType! == responseType) {
+          byteData = Uint8List.sublistView(event.message, 2);
+          acknowledged = true;
+        }
+        if (acknowledged) {
+          commandReplies.removeAt(idx);
+          if (reference.isNotEmpty) {
+            debugPrint("Ack received for: $reference");
+          }
+          break;
+        }
+      }
+      await Future.delayed(Duration(milliseconds: 50));
+      now = DateTime.now().millisecondsSinceEpoch;
+    }
+    return (acknowledged, byteData);
+  }
+
+  Future<bool> waitForResponse({timeout = 10, reference = ""}) async {
+    var acknowledged = false;
+    var now = DateTime.now().millisecondsSinceEpoch;
+    var expirationTime = now + (timeout * 1000);
+    while (!acknowledged && !(now > expirationTime)) {
+      if (commandReplies.isEmpty) {
+        await Future.delayed(Duration(milliseconds: 50));
+        now = DateTime.now().millisecondsSinceEpoch;
+        continue;
+      }
+      for (final (idx, event) in commandReplies.indexed) {
+        if (MessageCodes.acknowledged.sameAsMessage(event.message)) {
+          acknowledged = true;
+          commandReplies.removeAt(idx);
           if (reference.isNotEmpty) {
             debugPrint("Ack received for: $reference");
           }
@@ -532,12 +654,40 @@ class Shimmer3 {
     return acknowledged;
   }
 
-  Future<bool> getDeviceConfiguration() async {}
+  Future<bool> getDeviceConfiguration() async {
+    bool success = false;
+    Uint8List? responseData;
+    flushCommandReplies();
+    stopStreaming();
+
+    (success, responseData) = await sendCommand(
+      "get firmware version",
+      MessageCodes.getFWVersion,
+      responseType: MessageCodes.fwVersion,
+    );
+    if (!success) {
+      return false;
+    }
+    deviceConfiguration[MessageCodes.fwVersion] = ResponseFrame(responseData!).data;
+
+    (success, responseData) = await sendCommand(
+      "get device version",
+      MessageCodes.getDeviceVersion,
+      responseType: MessageCodes.deviceVersion,
+    );
+    if (!success) {
+      return false;
+    }
+    deviceConfiguration[MessageCodes.deviceVersion] = ResponseFrame(responseData!).data;
+
+    return true;
+  }
 
   Future<bool> initialize(List<Sensors> sensors, {sampleRate = 100}) async {
     return _commMutex.protect<bool>(() async {
-      int command, byte0, byte1, byte2;
-      flushQueue();
+      int byte0, byte1, byte2;
+      bool success = false;
+      flushCommandReplies();
       stopStreaming();
 
       // Set up sensors
@@ -545,46 +695,54 @@ class Shimmer3 {
       for (var sensor in sensors) {
         configuration += 1 << sensor.enableBitShift;
       }
-      command = MessageCodes.setSensors.value;
       byte0 = (configuration & 0x00ff0000) >> 16;
       byte1 = (configuration & 0x0000ff00) >> 8;
       byte2 = (configuration & 0x000000ff);
-      Uint8List payload = Uint8List.fromList([command, byte0, byte1, byte2]);
 
-      if (!(await sendCommand("set up sensors", payload))) {
+      (success, _) = await sendCommand("set up sensors", MessageCodes.setSensors, data: [byte0, byte1, byte2]);
+      if (!success) {
         return false;
       }
 
       // Enable expansion board internal power
-      command = MessageCodes.setExpansionBoardInternalPower.value;
-      payload = Uint8List.fromList([command, 1]);
-
-      if (!(await sendCommand("enable expansion board power", payload))) {
+      (success, _) = await sendCommand(
+        "enable expansion board power",
+        MessageCodes.setExpansionBoardInternalPower,
+        data: [1],
+      );
+      if (!success) {
         return false;
       }
 
       // Set sampling rate
-      command = MessageCodes.setSamplingRate.value;
       int clockWait = ((1 << 15) / sampleRate).toInt();
       byte0 = (clockWait & 0x00ff);
       byte1 = (clockWait & 0xff00) >> 8;
-      payload = Uint8List.fromList([command, byte0, byte1]);
-
-      if (!(await sendCommand("set up sampling rate", payload))) {
+      (success, _) = await sendCommand("set up sampling rate", MessageCodes.setSamplingRate, data: [byte0, byte1]);
+      if (!success) {
         return false;
       }
 
-      // TODO: Set Real World Clock
+      var shimmer3ClockTicks = DateTime.now().millisecondsSinceEpoch * 32.768;
+      var byteStream = ByteData(8);
+      byteStream.setFloat64(0, shimmer3ClockTicks, Endian.little);
+      (success, _) = await sendCommand(
+        "set up real world time",
+        MessageCodes.setUnixTimestampMilliseconds,
+        data: byteStream.buffer.asUint8List().toList(),
+      );
+      if (!success) {
+        return false;
+      }
 
-      flushQueue();
       return true;
     });
   }
 
   Future<bool> startStreaming() async {
     return _commMutex.protect<bool>(() async {
-      var payload = MessageCodes.startStreaming.asUint8List();
-      if (!(await sendCommand("starting streaming", payload))) {
+      var (success, _) = await sendCommand("starting streaming", MessageCodes.startStreaming);
+      if (!success) {
         return false;
       }
       _streaming = true;
@@ -594,8 +752,8 @@ class Shimmer3 {
 
   Future<bool> stopStreaming() async {
     return _commMutex.protect<bool>(() async {
-      var payload = MessageCodes.stopStreaming.asUint8List();
-      if (!(await sendCommand("stopping streaming", payload))) {
+      var (success, _) = await sendCommand("stopping streaming", MessageCodes.stopStreaming);
+      if (!success) {
         return false;
       }
       _streaming = false;
