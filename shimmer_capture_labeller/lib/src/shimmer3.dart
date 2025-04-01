@@ -58,40 +58,8 @@ class ResponseFrame {
   void parseDataFrame() {
     var blob = ByteData.sublistView(packetBytes, 2);
     var idx = 0;
-    int? value;
-    double? float;
-    String? text;
     for (var signal in responseType.responseSignals!) {
-      switch (signal.process) {
-        case ProcessingMethods.ascii:
-          text = Signal.getStringFromByteData(blob);
-          break;
-        case ProcessingMethods.valueMap:
-          var mapKey = Signal.getIntFromByteData(signal.type, blob, idx);
-          switch (signal) {
-            case Signals.chargeStatusLEDResponse:
-            case Signals.expBoardIDTypeResponse:
-              text = signal.valueMap![mapKey];
-              break;
-            default:
-              debugPrint("WARNING: Signal ($signal) with valueMap has no parseDataFrame handler");
-              break;
-          }
-          break;
-        case ProcessingMethods.tickSamplingRate:
-          var delayTicks = Signal.getIntFromByteData(signal.type, blob, idx);
-          float = tickSamplingRate(delayTicks);
-          break;
-        case ProcessingMethods.bitShift:
-          var byte = Signal.getIntFromByteData(signal.type, blob, idx) & signal.bitMask!;
-          value = byte >> signal.bitShift!;
-          break;
-        case ProcessingMethods.int:
-        default:
-          value = Signal.getIntFromByteData(signal.type, blob, idx);
-          break;
-      }
-      data.add(Signal(signal, text: text, value: value, float: float));
+      data.add(Signal.fromByteData(signal, blob, idx: idx));
       idx += signal.type.byteSize;
     }
   }
@@ -290,7 +258,7 @@ class SensorData {
     var idx = 0;
     var blob = ByteData.sublistView(dataPacket);
     for (var signal in sensorType.signals) {
-      parsedData[signal.name] = Signal.getIntFromByteData(signal.type, blob, idx);
+      parsedData[signal.name] = Signal.getIntFromByteData(signal.type, blob, idx: idx);
       idx += signal.type.byteSize;
     }
     return parsedData;

@@ -33,9 +33,28 @@ enum MessageCodes {
 
   // Device Configuration
   inquiryCommand(0x01),
-  inquiryResponse(0x02),
+  inquiryResponse(
+    0x02,
+    responseSignals: [
+      Signals.samplingRateResponse,
+      Signals.configLSM303AccelSamplingRate,
+      Signals.configLSM303AccelRange,
+      Signals.configLSM303AccelLowPower,
+      Signals.configLSM303AccelHighRes,
+      Signals.configMPU9X50SamplingRate,
+      Signals.configLSM303MagGain,
+      Signals.configLSM303MagSamplingRate,
+      Signals.configMPU9X50GyroRange,
+      Signals.configMPU9X50AccelRange,
+      Signals.configBMPX80PressResolution,
+      Signals.configGSRRange,
+      Signals.configExpansionBoardInternalPower,
+      Signals.numberDataChannelsResponse,
+      Signals.dataSignalsOrderResponse,
+    ],
+  ),
   getSamplingRate(0x03),
-  samplingRateResponse(0x04),
+  samplingRateResponse(0x04, responseSignals: [Signals.samplingRateResponse]),
   setSamplingRate(0x05),
   toggleLED(0x06),
   setSensors(0x08),
@@ -43,14 +62,78 @@ enum MessageCodes {
   configSetupResponse(0x0F),
   getConfigSetup(0x10),
   getAllCalibration(0x2C),
-  allCalibration(0x2D),
+  allCalibration(
+    0x2D,
+    responseSignals: [
+      Signals.analogAccelOffsetX,
+      Signals.analogAccelOffsetY,
+      Signals.analogAccelOffsetZ,
+      Signals.analogAccelSensitivityX,
+      Signals.analogAccelSensitivityY,
+      Signals.analogAccelSensitivityZ,
+      Signals.analogAccelAlignRow1ColA,
+      Signals.analogAccelAlignRow1ColB,
+      Signals.analogAccelAlignRow1ColC,
+      Signals.analogAccelAlignRow2ColA,
+      Signals.analogAccelAlignRow2ColB,
+      Signals.analogAccelAlignRow2ColC,
+      Signals.analogAccelAlignRow3ColA,
+      Signals.analogAccelAlignRow3ColB,
+      Signals.analogAccelAlignRow3ColC,
+      Signals.gyroscopeOffsetX,
+      Signals.gyroscopeOffsetY,
+      Signals.gyroscopeOffsetZ,
+      Signals.gyroscopeSensitivityX,
+      Signals.gyroscopeSensitivityY,
+      Signals.gyroscopeSensitivityZ,
+      Signals.gyroscopeAlignRow1ColA,
+      Signals.gyroscopeAlignRow1ColB,
+      Signals.gyroscopeAlignRow1ColC,
+      Signals.gyroscopeAlignRow2ColA,
+      Signals.gyroscopeAlignRow2ColB,
+      Signals.gyroscopeAlignRow2ColC,
+      Signals.gyroscopeAlignRow3ColA,
+      Signals.gyroscopeAlignRow3ColB,
+      Signals.gyroscopeAlignRow3ColC,
+      Signals.magnetometerOffsetX,
+      Signals.magnetometerOffsetY,
+      Signals.magnetometerOffsetZ,
+      Signals.magnetometerSensitivityX,
+      Signals.magnetometerSensitivityY,
+      Signals.magnetometerSensitivityZ,
+      Signals.magnetometerAlignRow1ColA,
+      Signals.magnetometerAlignRow1ColB,
+      Signals.magnetometerAlignRow1ColC,
+      Signals.magnetometerAlignRow2ColA,
+      Signals.magnetometerAlignRow2ColB,
+      Signals.magnetometerAlignRow2ColC,
+      Signals.magnetometerAlignRow3ColA,
+      Signals.magnetometerAlignRow3ColB,
+      Signals.magnetometerAlignRow3ColC,
+      Signals.wrAccelOffsetX,
+      Signals.wrAccelOffsetY,
+      Signals.wrAccelOffsetZ,
+      Signals.wrAccelSensitivityX,
+      Signals.wrAccelSensitivityY,
+      Signals.wrAccelSensitivityZ,
+      Signals.wrAccelAlignRow1ColA,
+      Signals.wrAccelAlignRow1ColB,
+      Signals.wrAccelAlignRow1ColC,
+      Signals.wrAccelAlignRow2ColA,
+      Signals.wrAccelAlignRow2ColB,
+      Signals.wrAccelAlignRow2ColC,
+      Signals.wrAccelAlignRow3ColA,
+      Signals.wrAccelAlignRow3ColB,
+      Signals.wrAccelAlignRow3ColC,
+    ],
+  ),
   setChargeStatusLED(0x30),
   chargeStatusLED(0x31, responseSignals: [Signals.chargeStatusLEDResponse]),
   getChargeStatusLED(0x32),
   resetToDefaultConfiguration(0x5A),
   resetCalibrationValue(0x5B),
   setExpansionBoardInternalPower(0x5E),
-  expansionBoardInternalPower(0x5F),
+  expansionBoardInternalPower(0x5F, responseSignals: [Signals.expansionBoardInternalPowerResponse]),
   getExpansionBoardInternalPower(0x60),
   setEXGRegisters(0x61),
   exgRegisters(0x62),
@@ -86,32 +169,32 @@ enum MessageCodes {
   centerString(0x77), // I guess this is "ResearchCenterName"
   getCenterString(0x78), // I guess this is "ResearchCenterName"
   setShimmerNameString(0x79),
-  shimmerNameString(0x7a),
+  shimmerNameString(0x7a, responseSignals: [Signals.shimmerNameResponse]),
   getShimmerNameString(0x7b),
   setExperimentIDString(0x7c),
-  experimentIDString(0x7d),
+  experimentIDString(0x7d, responseSignals: [Signals.experimentIDResponse]),
   getExperimentIDString(0x7e),
   setMyID(0x7F),
   myID(0x80),
   getMyID(0x81),
   setShimmerNumber(0x82),
-  shimmerNumber(0x83),
+  shimmerNumber(0x83, responseSignals: [Signals.shimmerNumberResponse]),
   getShimmerNumber(0x84),
   setConfigTimestampString(0x85),
-  configTimestampString(0x86),
+  configTimestampString(0x86, responseSignals: [Signals.configTimestampResponse]),
   getConfigTimestampString(0x87),
 
   // Sensors configuration
   // "Wide-Range Accelerometer" or "Digital Accelerometer" sensor
   // Shimmer3 STMicro Sensor: before 2017-09 LSM303DLHC, after 2017-09 LSM303AHTR
   setLSM303DLHCAccelRange(0x09),
-  lsm303DLHCAccelRange(0x0A),
+  lsm303DLHCAccelRange(0x0A, responseSignals: [Signals.lsm303AHTRAccelRangeResponse]),
   getLSM303DLHCAccelRange(0x0B),
   setLSM303DLHCAccelCalibration(0x1A),
   lsm303DLHCAccelCalibration(0x1B),
   getLSM303DLHCAccelCalibration(0x1C),
   setLSM303DLHCAccelSamplingRate(0x40),
-  lsm303DLHCAccelSamplingRate(0x41),
+  lsm303DLHCAccelSamplingRate(0x41, responseSignals: [Signals.lsm303AHTRAccelDataRateResponse]),
   getLSM303DLHCAccelSamplingRate(0x42),
   setLSM303DLHCAccelLowPower(0x43),
   lsm303DLHCAccelLowPower(0x44),
@@ -127,7 +210,7 @@ enum MessageCodes {
   lsm303DLHCMagSamplingRate(0x3B),
   getLSM303DLHCMagSamplingRate(0x3C),
   setLSM303DLHCMagGain(0x37),
-  lsm303DLHCMagGain(0x38),
+  lsm303DLHCMagGain(0x38, responseSignals: [Signals.lsm303AHTRMagGainResponse]),
   getLSM303DLHCMagGain(0x39),
   // "Low-Noise Accelerometer" sensor
   // Shimmer3 Kionix Sensor: before 2017-09 KXRB5-2042, after 2017-09 KXTC9-2050
@@ -135,9 +218,9 @@ enum MessageCodes {
   analogAccelCalibration(0x12),
   getAnalogAccelCalibration(0x13),
   // "Gyroscope" sensor
-  // Shimmer3 Invensense Sensor: before 2017-09 MPU9150, after 2017-09 MPU9250
+  // Shimmer3 InvenSense Sensor: before 2017-09 MPU9150, after 2017-09 MPU9250
   setMPU9150GyroRange(0x49),
-  mpu9150GyroRange(0x4A),
+  mpu9150GyroRange(0x4A, responseSignals: [Signals.mpu9150GyroRangeResponse]),
   getMPU9150GyroRange(0x4B),
   setMPU9150GyroCalibration(0x14),
   mpu9150GyroCalibration(0x15),
@@ -253,35 +336,126 @@ class Signal {
   final Signals type;
   late SignalIntTypes intType;
   late String name;
-  late int? value;
+  late int? integer;
   late String? text;
   late double? float;
-  late ByteData byteData;
+  late bool? isSet;
+  late (double, double)? range;
+  late List<Signals>? signalOrder;
+  int? rawValue;
 
-  Signal(this.type, {this.value, this.text, this.float}) {
+  Signal(this.type, {this.integer, this.text, this.float, this.isSet, this.range, this.signalOrder, this.rawValue}) {
     intType = type.type;
     name = type.name;
-    if (text != null && value != null && float != null) {
-      throw ArgumentError("You need to set a text or a integer or a float value");
+    if (text != null && integer != null && float != null && isSet != null) {
+      throw ArgumentError("You need to set at least one value type [integer, text, float, isSet, range, signalOrder]");
     }
-    byteData = text != null ? getByteDataFromString(text!) : getByteDataFromInt(intType, value!);
   }
 
-  Signal fromByteData(Signals type, ByteData blob) {
-    byteData = blob;
-    if (type.process == ProcessingMethods.tickSamplingRate) {}
-    if (type.process == ProcessingMethods.ascii) {
-      text = getStringFromByteData(blob);
-      return Signal(type, text: text);
+  factory Signal.fromByteData(Signals signal, ByteData blob, {int idx = 0}) {
+    int? integer, rawValue;
+    double? float;
+    String? text;
+    bool? isSet;
+    (double, double)? range;
+    List<Signals>? signalOrder;
+    switch (signal.process) {
+      case ProcessingMethods.ascii:
+        text = getStringFromByteData(blob);
+        break;
+      case ProcessingMethods.valueMap:
+        var mapKey = rawValue = getIntFromByteData(signal.type, blob, idx: idx);
+        switch (signal) {
+          case Signals.chargeStatusLEDResponse:
+          case Signals.expBoardIDTypeResponse:
+            text = signal.valueMap![mapKey];
+            break;
+          case Signals.lsm303AHTRAccelRangeResponse:
+          case Signals.lsm303AHTRMagGainResponse:
+          case Signals.lsm303AHTRAccelDataRateResponse:
+            float = signal.valueMap![mapKey];
+            break;
+          case Signals.mpu9150GyroRangeResponse:
+            integer = signal.valueMap![mapKey];
+            break;
+          default:
+            debugPrint("WARNING: Signal ($signal) with valueMap has no parseDataFrame handler");
+            break;
+        }
+        break;
+      case ProcessingMethods.tickSamplingRate:
+        var delayTicks = rawValue = getIntFromByteData(signal.type, blob, idx: idx);
+        float = tickSamplingRate(delayTicks);
+        break;
+      case ProcessingMethods.bitShift:
+        var registerValue = rawValue = getIntFromByteData(signal.type, blob, idx: idx);
+        var trueValue = (registerValue & signal.bitMask!) >> signal.bitShift!;
+        if (signal.valueMap != null) {
+          switch (signal) {
+            case Signals.configLSM303AccelRange:
+            case Signals.configLSM303MagGain:
+              float = signal.valueMap![trueValue];
+              break;
+            case Signals.configMPU9X50GyroRange:
+              integer = signal.valueMap![trueValue];
+              break;
+            case Signals.configBMPX80PressResolution:
+              text = signal.valueMap![trueValue];
+              break;
+            case Signals.configGSRRange:
+              range = signal.valueMap![trueValue];
+              break;
+            default:
+              debugPrint("WARNING: Signal ($signal) with valueMap has no parseDataFrame handler");
+              break;
+          }
+        } else {
+          var bitMaskString = signal.bitMask!.toRadixString(2);
+          var bitsInMask = bitMaskString.split("").fold<int>(0, (acc, char) => char == "1" ? acc + 1 : acc);
+          var isBoolean = bitsInMask == 1;
+          if (isBoolean) {
+            isSet = trueValue != 0;
+          } else {
+            integer = trueValue;
+          }
+        }
+        break;
+      case ProcessingMethods.alignMatrix:
+        rawValue = getIntFromByteData(signal.type, blob, idx: idx);
+        integer = (rawValue / 100).truncate();
+        break;
+      case ProcessingMethods.gyroSensitivity:
+        rawValue = getIntFromByteData(signal.type, blob, idx: idx);
+        float = rawValue / 100;
+        break;
+      case ProcessingMethods.boolean:
+        rawValue = getIntFromByteData(signal.type, blob, idx: idx);
+        isSet = rawValue != 0;
+        break;
+      case ProcessingMethods.signalOrder:
+        signalOrder = getSignalOrderFromByteData(blob);
+        break;
+      case ProcessingMethods.int:
+      default:
+        integer = rawValue = getIntFromByteData(signal.type, blob, idx: idx);
+        break;
     }
-    value = getIntFromByteData(intType, blob, 0);
-    return Signal(type, value: value);
+    return Signal(
+      signal,
+      text: text,
+      integer: integer,
+      float: float,
+      isSet: isSet,
+      range: range,
+      signalOrder: signalOrder,
+      rawValue: rawValue,
+    );
   }
 
   @override
-  String toString() => "($intType) $name signal (${text?.isNotEmpty ?? false ? text : value})";
+  String toString() => "($intType) $name signal (${text?.isNotEmpty ?? false ? text : integer})";
 
-  static int getIntFromByteData(SignalIntTypes intType, ByteData byteData, idx) {
+  static int getIntFromByteData(SignalIntTypes intType, ByteData byteData, {int idx = 0}) {
     switch (intType) {
       case SignalIntTypes.noByteShift:
       case SignalIntTypes.byteShift:
@@ -391,9 +565,41 @@ class Signal {
     b.add(latin1.encode(text));
     return b.toBytes().buffer.asByteData();
   }
+
+  static List<Signals> getSignalOrderFromByteData(ByteData byteData) {
+    List<Signals> signalsList = [];
+    var length = byteData.getUint8(0);
+    var packetStringLength = byteData.lengthInBytes - 1;
+    if (length > packetStringLength) {
+      debugPrint(
+        "String length found in idx(0) of response packet ($length) is"
+        " longer than information in response packet ($packetStringLength)",
+      );
+      length = packetStringLength;
+    }
+    for (var idx in Iterable.generate(length)) {
+      var signalID = byteData.getUint8(idx + 1);
+      signalsList.add(signalsIDDictionary[signalID]!);
+    }
+    return signalsList;
+  }
 }
 
-enum ProcessingMethods { adc, imu, int, ascii, clockShift, valueMap, messageCode, tickSamplingRate, bitShift }
+enum ProcessingMethods {
+  adc,
+  imu,
+  int,
+  ascii,
+  clockShift,
+  valueMap,
+  messageCode,
+  tickSamplingRate,
+  bitShift,
+  alignMatrix,
+  gyroSensitivity,
+  boolean,
+  signalOrder,
+}
 
 enum Signals {
   lowNoiseAccelX(type: SignalIntTypes.u12l, process: ProcessingMethods.imu, byteID: 0x00),
@@ -444,7 +650,151 @@ enum Signals {
     bitShift: 1,
     bitMask: 0x02,
   ),
-  statusDockedResponse(type: SignalIntTypes.byteShift, process: ProcessingMethods.bitShift, bitShift: 0, bitMask: 0x01);
+  statusDockedResponse(type: SignalIntTypes.byteShift, process: ProcessingMethods.bitShift, bitShift: 0, bitMask: 0x01),
+  lsm303AHTRAccelRangeResponse(process: ProcessingMethods.valueMap, valueMap: lsm303AHTRAccelRange),
+  samplingRateResponse(type: SignalIntTypes.u16l, process: ProcessingMethods.tickSamplingRate),
+  lsm303AHTRMagGainResponse(process: ProcessingMethods.valueMap, valueMap: lsm303AHTRMagRange),
+  mpu9150GyroRangeResponse(process: ProcessingMethods.valueMap, valueMap: mpu9X50GyroRange),
+  lsm303AHTRAccelDataRateResponse(process: ProcessingMethods.valueMap, valueMap: lsm303AHTRAccelDataRate),
+  analogAccelOffsetX(type: SignalIntTypes.u16b),
+  analogAccelOffsetY(type: SignalIntTypes.u16b),
+  analogAccelOffsetZ(type: SignalIntTypes.u16b),
+  analogAccelSensitivityX(type: SignalIntTypes.u16b),
+  analogAccelSensitivityY(type: SignalIntTypes.u16b),
+  analogAccelSensitivityZ(type: SignalIntTypes.u16b),
+  analogAccelAlignRow1ColA(type: SignalIntTypes.i8, process: ProcessingMethods.alignMatrix),
+  analogAccelAlignRow1ColB(type: SignalIntTypes.i8, process: ProcessingMethods.alignMatrix),
+  analogAccelAlignRow1ColC(type: SignalIntTypes.i8, process: ProcessingMethods.alignMatrix),
+  analogAccelAlignRow2ColA(type: SignalIntTypes.i8, process: ProcessingMethods.alignMatrix),
+  analogAccelAlignRow2ColB(type: SignalIntTypes.i8, process: ProcessingMethods.alignMatrix),
+  analogAccelAlignRow2ColC(type: SignalIntTypes.i8, process: ProcessingMethods.alignMatrix),
+  analogAccelAlignRow3ColA(type: SignalIntTypes.i8, process: ProcessingMethods.alignMatrix),
+  analogAccelAlignRow3ColB(type: SignalIntTypes.i8, process: ProcessingMethods.alignMatrix),
+  analogAccelAlignRow3ColC(type: SignalIntTypes.i8, process: ProcessingMethods.alignMatrix),
+  gyroscopeOffsetX(type: SignalIntTypes.u16b),
+  gyroscopeOffsetY(type: SignalIntTypes.u16b),
+  gyroscopeOffsetZ(type: SignalIntTypes.u16b),
+  gyroscopeSensitivityX(type: SignalIntTypes.u16b, process: ProcessingMethods.gyroSensitivity),
+  gyroscopeSensitivityY(type: SignalIntTypes.u16b, process: ProcessingMethods.gyroSensitivity),
+  gyroscopeSensitivityZ(type: SignalIntTypes.u16b, process: ProcessingMethods.gyroSensitivity),
+  gyroscopeAlignRow1ColA(type: SignalIntTypes.i8, process: ProcessingMethods.alignMatrix),
+  gyroscopeAlignRow1ColB(type: SignalIntTypes.i8, process: ProcessingMethods.alignMatrix),
+  gyroscopeAlignRow1ColC(type: SignalIntTypes.i8, process: ProcessingMethods.alignMatrix),
+  gyroscopeAlignRow2ColA(type: SignalIntTypes.i8, process: ProcessingMethods.alignMatrix),
+  gyroscopeAlignRow2ColB(type: SignalIntTypes.i8, process: ProcessingMethods.alignMatrix),
+  gyroscopeAlignRow2ColC(type: SignalIntTypes.i8, process: ProcessingMethods.alignMatrix),
+  gyroscopeAlignRow3ColA(type: SignalIntTypes.i8, process: ProcessingMethods.alignMatrix),
+  gyroscopeAlignRow3ColB(type: SignalIntTypes.i8, process: ProcessingMethods.alignMatrix),
+  gyroscopeAlignRow3ColC(type: SignalIntTypes.i8, process: ProcessingMethods.alignMatrix),
+  magnetometerOffsetX(type: SignalIntTypes.u16b),
+  magnetometerOffsetY(type: SignalIntTypes.u16b),
+  magnetometerOffsetZ(type: SignalIntTypes.u16b),
+  magnetometerSensitivityX(type: SignalIntTypes.u16b),
+  magnetometerSensitivityY(type: SignalIntTypes.u16b),
+  magnetometerSensitivityZ(type: SignalIntTypes.u16b),
+  magnetometerAlignRow1ColA(type: SignalIntTypes.i8, process: ProcessingMethods.alignMatrix),
+  magnetometerAlignRow1ColB(type: SignalIntTypes.i8, process: ProcessingMethods.alignMatrix),
+  magnetometerAlignRow1ColC(type: SignalIntTypes.i8, process: ProcessingMethods.alignMatrix),
+  magnetometerAlignRow2ColA(type: SignalIntTypes.i8, process: ProcessingMethods.alignMatrix),
+  magnetometerAlignRow2ColB(type: SignalIntTypes.i8, process: ProcessingMethods.alignMatrix),
+  magnetometerAlignRow2ColC(type: SignalIntTypes.i8, process: ProcessingMethods.alignMatrix),
+  magnetometerAlignRow3ColA(type: SignalIntTypes.i8, process: ProcessingMethods.alignMatrix),
+  magnetometerAlignRow3ColB(type: SignalIntTypes.i8, process: ProcessingMethods.alignMatrix),
+  magnetometerAlignRow3ColC(type: SignalIntTypes.i8, process: ProcessingMethods.alignMatrix),
+  wrAccelOffsetX(type: SignalIntTypes.u16b),
+  wrAccelOffsetY(type: SignalIntTypes.u16b),
+  wrAccelOffsetZ(type: SignalIntTypes.u16b),
+  wrAccelSensitivityX(type: SignalIntTypes.u16b),
+  wrAccelSensitivityY(type: SignalIntTypes.u16b),
+  wrAccelSensitivityZ(type: SignalIntTypes.u16b),
+  wrAccelAlignRow1ColA(type: SignalIntTypes.i8, process: ProcessingMethods.alignMatrix),
+  wrAccelAlignRow1ColB(type: SignalIntTypes.i8, process: ProcessingMethods.alignMatrix),
+  wrAccelAlignRow1ColC(type: SignalIntTypes.i8, process: ProcessingMethods.alignMatrix),
+  wrAccelAlignRow2ColA(type: SignalIntTypes.i8, process: ProcessingMethods.alignMatrix),
+  wrAccelAlignRow2ColB(type: SignalIntTypes.i8, process: ProcessingMethods.alignMatrix),
+  wrAccelAlignRow2ColC(type: SignalIntTypes.i8, process: ProcessingMethods.alignMatrix),
+  wrAccelAlignRow3ColA(type: SignalIntTypes.i8, process: ProcessingMethods.alignMatrix),
+  wrAccelAlignRow3ColB(type: SignalIntTypes.i8, process: ProcessingMethods.alignMatrix),
+  wrAccelAlignRow3ColC(type: SignalIntTypes.i8, process: ProcessingMethods.alignMatrix),
+  expansionBoardInternalPowerResponse(process: ProcessingMethods.boolean),
+  shimmerNameResponse(process: ProcessingMethods.ascii),
+  experimentIDResponse(process: ProcessingMethods.ascii),
+  shimmerNumberResponse,
+  configTimestampResponse(process: ProcessingMethods.ascii),
+  configLSM303AccelSamplingRate(
+    type: SignalIntTypes.noByteShift,
+    process: ProcessingMethods.bitShift,
+    bitShift: 4,
+    bitMask: 0xF0,
+  ),
+  configLSM303AccelRange(
+    type: SignalIntTypes.noByteShift,
+    process: ProcessingMethods.bitShift,
+    bitShift: 2,
+    bitMask: 0x0C,
+    valueMap: lsm303AHTRAccelRange,
+  ),
+  configLSM303AccelLowPower(
+    type: SignalIntTypes.noByteShift,
+    process: ProcessingMethods.bitShift,
+    bitShift: 1,
+    bitMask: 0x02,
+  ),
+  configLSM303AccelHighRes(
+    type: SignalIntTypes.byteShift,
+    process: ProcessingMethods.bitShift,
+    bitShift: 0,
+    bitMask: 0x01,
+  ),
+  configMPU9X50SamplingRate,
+  configLSM303MagGain(
+    type: SignalIntTypes.noByteShift,
+    process: ProcessingMethods.bitShift,
+    bitShift: 5,
+    bitMask: 0xE0,
+    valueMap: lsm303AHTRMagGain,
+  ),
+  configLSM303MagSamplingRate(
+    type: SignalIntTypes.noByteShift,
+    process: ProcessingMethods.bitShift,
+    bitShift: 2,
+    bitMask: 0x1C,
+  ),
+  configMPU9X50GyroRange(
+    type: SignalIntTypes.byteShift,
+    process: ProcessingMethods.bitShift,
+    bitShift: 0,
+    bitMask: 0x03,
+    valueMap: mpu9X50GyroRange,
+  ),
+  configMPU9X50AccelRange(
+    type: SignalIntTypes.noByteShift,
+    process: ProcessingMethods.bitShift,
+    bitShift: 6,
+    bitMask: 0xC0,
+  ),
+  configBMPX80PressResolution(
+    type: SignalIntTypes.noByteShift,
+    process: ProcessingMethods.bitShift,
+    bitShift: 4,
+    bitMask: 0x30,
+    valueMap: bmpX80PressResolution,
+  ),
+  configGSRRange(
+    type: SignalIntTypes.noByteShift,
+    process: ProcessingMethods.bitShift,
+    bitShift: 1,
+    bitMask: 0x0E,
+    valueMap: gsrResistanceRange,
+  ),
+  configExpansionBoardInternalPower(
+    type: SignalIntTypes.byteShift,
+    process: ProcessingMethods.bitShift,
+    bitShift: 0,
+    bitMask: 0x01,
+  ),
+  numberDataChannelsResponse,
+  dataSignalsOrderResponse(process: ProcessingMethods.signalOrder);
 
   final SignalIntTypes type;
   final ProcessingMethods process;
@@ -667,6 +1017,9 @@ const Map<int, double> lsm303AHTRMagDataRate = {0: 10.0, 1: 20.0, 2: 50.0, 3: 10
 // Units: Ga
 const Map<int, double> lsm303AHTRMagRange = {0: 49.152};
 
+// Units: none
+const Map<int, double> lsm303AHTRMagGain = {0: 0, 1: 1.3, 2: 1.9, 3: 2.5, 4: 4.0, 5: 4.7, 6: 5.6, 7: 8.1};
+
 // Units: g, Default: 0 - ±2.0g
 const Map<int, double> lsm303AHTRAccelRange = {0: 2.0, 1: 16.0, 2: 4.0, 3: 8.0};
 
@@ -706,4 +1059,24 @@ const Map<int, String> expansionBoards = {
   0x30: "Expansion Board GSR Unified",
   0x31: "Expansion Board Bridge Amplifier Unified",
   0x3B: "Shimmer3 EXG Extended",
+};
+
+const Map<int, Signals> signalsIDDictionary = {
+  0x00: Signals.lowNoiseAccelX,
+  0x01: Signals.lowNoiseAccelY,
+  0x02: Signals.lowNoiseAccelZ,
+  0x04: Signals.wideRangeAccelX,
+  0x05: Signals.wideRangeAccelY,
+  0x06: Signals.wideRangeAccelZ,
+  0x0A: Signals.gyroscopeX,
+  0x0B: Signals.gyroscopeY,
+  0x0C: Signals.gyroscopeZ,
+  0x07: Signals.magnetometerX,
+  0x08: Signals.magnetometerY,
+  0x09: Signals.magnetometerZ,
+  0x1C: Signals.gsrADC,
+  0x03: Signals.batteryADC,
+  0x12: Signals.ppgADC,
+  0x1a: Signals.pressure,
+  0x1b: Signals.temperature,
 };
