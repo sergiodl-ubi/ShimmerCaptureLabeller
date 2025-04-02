@@ -9,6 +9,8 @@ DebugPrintCallback debugPrint = customDebugPrint("Shimmer3Definitions", true);
 // ########### Shimmer3 BT Protocol ##########
 
 const shimmer3ByteStringMaxLength = 255;
+const deviceVoltageDropFactor = 1.988;
+Map<int, MessageCodes> messageCodesDictionary = MessageCodes.asDictionaryMap();
 
 enum MessageCodes {
   // Stream and Logging
@@ -18,12 +20,20 @@ enum MessageCodes {
   bufferSize(0x35),
   getBufferSize(0x36),
   startLogAndStream(0x70),
-  status(0x71),
+  status(
+    0x71,
+    responseSignals: [
+      Signals.statusBTStreamResponse,
+      Signals.statusSDLogResponse,
+      Signals.statusSensingResponse,
+      Signals.statusDockedResponse,
+    ],
+  ),
   getStatus(0x72),
-  instreamCommand(0x8A),
+  instreamCommand(0x8A, responseSignals: [Signals.statusCodeResponse]),
   startLogging(0x92),
   stopLogging(0x93),
-  batteryVoltage(0x94),
+  batteryVoltage(0x94, responseSignals: [Signals.batteryVoltageResponse, Signals.chargeStatusLEDResponse]),
   getBatteryVoltage(0x95),
   stopLogAndStream(0x97),
   updateLoggingConfiguration(0x9C),
@@ -49,7 +59,6 @@ enum MessageCodes {
       Signals.configBMPX80PressResolution,
       Signals.configGSRRange,
       Signals.configExpansionBoardInternalPower,
-      Signals.numberDataChannelsResponse,
       Signals.dataSignalsOrderResponse,
     ],
   ),
@@ -142,12 +151,12 @@ enum MessageCodes {
   expansionBoardMemory(0x68),
   getExpansionBoardMemory(0x69),
   setBluetoothBaudRate(0x6A),
-  bluetoothBaudRate(0x6B),
+  bluetoothBaudRate(0x6B, responseSignals: [Signals.bluetoothBaudRateResponse]),
   getBluetoothBaudRate(0x6C),
   setDerivedSignals(0x6D),
   derivedSignals(0x6E),
   getDerivedSignals(0x6F),
-  directoryString(0x88),
+  directoryString(0x88, responseSignals: [Signals.directoryStringResponse]),
   getDirectoryString(0x89),
   setCRC(0x8B),
   setInfoMem(0x8C),
@@ -244,7 +253,23 @@ enum MessageCodes {
   getBMPX80PressOversamplingRatio(0x54),
   bmp180CalibrationCoefficients(0x58),
   getBMP180CalibrationCoefficients(0x59),
-  bmp280CalibrationCoefficients(0x9F),
+  bmp280CalibrationCoefficients(
+    0x9F,
+    responseSignals: [
+      Signals.bmp280CalibrationT1,
+      Signals.bmp280CalibrationT2,
+      Signals.bmp280CalibrationT3,
+      Signals.bmp280CalibrationP1,
+      Signals.bmp280CalibrationP2,
+      Signals.bmp280CalibrationP3,
+      Signals.bmp280CalibrationP4,
+      Signals.bmp280CalibrationP5,
+      Signals.bmp280CalibrationP6,
+      Signals.bmp280CalibrationP7,
+      Signals.bmp280CalibrationP8,
+      Signals.bmp280CalibrationP9,
+    ],
+  ),
   getBMP280CalibrationCoefficients(0xA0),
 
   // Device Information
@@ -341,10 +366,23 @@ class Signal {
   late double? float;
   late bool? isSet;
   late (double, double)? range;
-  late List<Signals>? signalOrder;
+  late (int, List<Signals>)? dataSignals;
+  late MessageCodes? messageCode;
+
+  /// (bufferSize, signalsOrder)
   int? rawValue;
 
-  Signal(this.type, {this.integer, this.text, this.float, this.isSet, this.range, this.signalOrder, this.rawValue}) {
+  Signal(
+    this.type, {
+    this.integer,
+    this.text,
+    this.float,
+    this.isSet,
+    this.range,
+    this.dataSignals,
+    this.messageCode,
+    this.rawValue,
+  }) {
     intType = type.type;
     name = type.name;
     if (text != null && integer != null && float != null && isSet != null) {
@@ -358,7 +396,8 @@ class Signal {
     String? text;
     bool? isSet;
     (double, double)? range;
-    List<Signals>? signalOrder;
+    (int, List<Signals>)? dataSignals;
+    MessageCodes? messageCode;
     switch (signal.process) {
       case ProcessingMethods.ascii:
         text = getStringFromByteData(blob);
@@ -376,6 +415,7 @@ class Signal {
             float = signal.valueMap![mapKey];
             break;
           case Signals.mpu9150GyroRangeResponse:
+          case Signals.bluetoothBaudRateResponse:
             integer = signal.valueMap![mapKey];
             break;
           default:
@@ -424,16 +464,43 @@ class Signal {
         rawValue = getIntFromByteData(signal.type, blob, idx: idx);
         integer = (rawValue / 100).truncate();
         break;
+      case ProcessingMethods.messageCode:
+        rawValue = getIntFromByteData(signal.type, blob, idx: idx);
+        messageCode = messageCodesDictionary[rawValue]!;
+        switch (messageCode) {
+          case MessageCodes.directoryString:
+            var textBlob = ByteData.sublistView(blob, idx + 1);
+            text = getStringFromByteData(textBlob);
+            break;
+          case MessageCodes.status:
+            rawValue = getIntFromByteData(SignalIntTypes.u8, blob, idx: idx + 1);
+            break;
+          case MessageCodes.batteryVoltage:
+            rawValue = getIntFromByteData(SignalIntTypes.u24b, blob, idx: idx + 1);
+            break;
+          default:
+            debugPrint("WARNING: Signal ($signal) does not implement $messageCode message code parsing");
+            break;
+        }
+        break;
       case ProcessingMethods.gyroSensitivity:
         rawValue = getIntFromByteData(signal.type, blob, idx: idx);
         float = rawValue / 100;
+        break;
+      case ProcessingMethods.gyroDataRate:
+        rawValue = getIntFromByteData(signal.type, blob, idx: idx);
+        float = 8000 / (rawValue + 1); // Shimmer3 manual is wrong, MPU9250's manual says is +1 not -1
         break;
       case ProcessingMethods.boolean:
         rawValue = getIntFromByteData(signal.type, blob, idx: idx);
         isSet = rawValue != 0;
         break;
       case ProcessingMethods.signalOrder:
-        signalOrder = getSignalOrderFromByteData(blob);
+        dataSignals = getDataSignalsFromByteData(blob);
+        break;
+      case ProcessingMethods.batteryVoltage:
+        var adcValue = rawValue = getIntFromByteData(signal.type, blob, idx: idx);
+        float = (adcValue * 3 / 4095) * deviceVoltageDropFactor;
         break;
       case ProcessingMethods.int:
       default:
@@ -447,7 +514,8 @@ class Signal {
       float: float,
       isSet: isSet,
       range: range,
-      signalOrder: signalOrder,
+      dataSignals: dataSignals,
+      messageCode: messageCode,
       rawValue: rawValue,
     );
   }
@@ -566,10 +634,12 @@ class Signal {
     return b.toBytes().buffer.asByteData();
   }
 
-  static List<Signals> getSignalOrderFromByteData(ByteData byteData) {
+  static (int, List<Signals>) getDataSignalsFromByteData(ByteData byteData) {
     List<Signals> signalsList = [];
+    const headerSize = 2;
     var length = byteData.getUint8(0);
-    var packetStringLength = byteData.lengthInBytes - 1;
+    var bufferSize = byteData.getUint8(1);
+    var packetStringLength = byteData.lengthInBytes - headerSize;
     if (length > packetStringLength) {
       debugPrint(
         "String length found in idx(0) of response packet ($length) is"
@@ -578,10 +648,10 @@ class Signal {
       length = packetStringLength;
     }
     for (var idx in Iterable.generate(length)) {
-      var signalID = byteData.getUint8(idx + 1);
+      var signalID = byteData.getUint8(idx + headerSize);
       signalsList.add(signalsIDDictionary[signalID]!);
     }
-    return signalsList;
+    return (bufferSize, signalsList);
   }
 }
 
@@ -597,28 +667,30 @@ enum ProcessingMethods {
   bitShift,
   alignMatrix,
   gyroSensitivity,
+  gyroDataRate,
   boolean,
   signalOrder,
+  batteryVoltage,
 }
 
 enum Signals {
-  lowNoiseAccelX(type: SignalIntTypes.u12l, process: ProcessingMethods.imu, byteID: 0x00),
-  lowNoiseAccelY(type: SignalIntTypes.u12l, process: ProcessingMethods.imu, byteID: 0x01),
-  lowNoiseAccelZ(type: SignalIntTypes.u12l, process: ProcessingMethods.imu, byteID: 0x02),
-  wideRangeAccelX(type: SignalIntTypes.i16l, process: ProcessingMethods.imu, byteID: 0x04),
-  wideRangeAccelY(type: SignalIntTypes.i16l, process: ProcessingMethods.imu, byteID: 0x05),
-  wideRangeAccelZ(type: SignalIntTypes.i16l, process: ProcessingMethods.imu, byteID: 0x06),
-  gyroscopeX(type: SignalIntTypes.i16b, process: ProcessingMethods.imu, byteID: 0x0A),
-  gyroscopeY(type: SignalIntTypes.i16b, process: ProcessingMethods.imu, byteID: 0x0B),
-  gyroscopeZ(type: SignalIntTypes.i16b, process: ProcessingMethods.imu, byteID: 0x0C),
-  magnetometerX(type: SignalIntTypes.i16l, process: ProcessingMethods.imu, byteID: 0x07),
-  magnetometerY(type: SignalIntTypes.i16l, process: ProcessingMethods.imu, byteID: 0x08),
-  magnetometerZ(type: SignalIntTypes.i16l, process: ProcessingMethods.imu, byteID: 0x09),
-  gsrADC(type: SignalIntTypes.u16l, process: ProcessingMethods.adc, byteID: 0x1C),
-  batteryADC(type: SignalIntTypes.u12l, process: ProcessingMethods.adc, byteID: 0x03),
-  ppgADC(type: SignalIntTypes.u12l, process: ProcessingMethods.adc, byteID: 0x12),
-  pressure(type: SignalIntTypes.u16b, process: ProcessingMethods.adc, byteID: 0x1a),
-  temperature(type: SignalIntTypes.u24b, process: ProcessingMethods.adc, byteID: 0x1b),
+  lowNoiseAccelX(type: SignalIntTypes.u12l, process: ProcessingMethods.imu),
+  lowNoiseAccelY(type: SignalIntTypes.u12l, process: ProcessingMethods.imu),
+  lowNoiseAccelZ(type: SignalIntTypes.u12l, process: ProcessingMethods.imu),
+  wideRangeAccelX(type: SignalIntTypes.i16l, process: ProcessingMethods.imu),
+  wideRangeAccelY(type: SignalIntTypes.i16l, process: ProcessingMethods.imu),
+  wideRangeAccelZ(type: SignalIntTypes.i16l, process: ProcessingMethods.imu),
+  gyroscopeX(type: SignalIntTypes.i16b, process: ProcessingMethods.imu),
+  gyroscopeY(type: SignalIntTypes.i16b, process: ProcessingMethods.imu),
+  gyroscopeZ(type: SignalIntTypes.i16b, process: ProcessingMethods.imu),
+  magnetometerX(type: SignalIntTypes.i16l, process: ProcessingMethods.imu),
+  magnetometerY(type: SignalIntTypes.i16l, process: ProcessingMethods.imu),
+  magnetometerZ(type: SignalIntTypes.i16l, process: ProcessingMethods.imu),
+  gsrADC(type: SignalIntTypes.u16l, process: ProcessingMethods.adc),
+  batteryADC(type: SignalIntTypes.u12l, process: ProcessingMethods.adc),
+  ppgADC(type: SignalIntTypes.u12l, process: ProcessingMethods.adc),
+  pressure(type: SignalIntTypes.u16b, process: ProcessingMethods.adc),
+  temperature(type: SignalIntTypes.u24b, process: ProcessingMethods.adc),
   dataTimestamp(type: SignalIntTypes.u24b),
   fwVersionIDResponse(type: SignalIntTypes.u16l),
   fwMajorResponse(type: SignalIntTypes.u16l),
@@ -651,6 +723,7 @@ enum Signals {
     bitMask: 0x02,
   ),
   statusDockedResponse(type: SignalIntTypes.byteShift, process: ProcessingMethods.bitShift, bitShift: 0, bitMask: 0x01),
+  directoryStringResponse(process: ProcessingMethods.ascii),
   lsm303AHTRAccelRangeResponse(process: ProcessingMethods.valueMap, valueMap: lsm303AHTRAccelRange),
   samplingRateResponse(type: SignalIntTypes.u16l, process: ProcessingMethods.tickSamplingRate),
   lsm303AHTRMagGainResponse(process: ProcessingMethods.valueMap, valueMap: lsm303AHTRMagRange),
@@ -746,7 +819,7 @@ enum Signals {
     bitShift: 0,
     bitMask: 0x01,
   ),
-  configMPU9X50SamplingRate,
+  configMPU9X50SamplingRate(process: ProcessingMethods.gyroDataRate),
   configLSM303MagGain(
     type: SignalIntTypes.noByteShift,
     process: ProcessingMethods.bitShift,
@@ -793,12 +866,24 @@ enum Signals {
     bitShift: 0,
     bitMask: 0x01,
   ),
-  numberDataChannelsResponse,
-  dataSignalsOrderResponse(process: ProcessingMethods.signalOrder);
+  dataSignalsOrderResponse(process: ProcessingMethods.signalOrder),
+  bluetoothBaudRateResponse(process: ProcessingMethods.valueMap, valueMap: btBaudRate),
+  bmp280CalibrationT1(type: SignalIntTypes.u16l),
+  bmp280CalibrationT2(type: SignalIntTypes.i16l),
+  bmp280CalibrationT3(type: SignalIntTypes.i16l),
+  bmp280CalibrationP1(type: SignalIntTypes.u16l),
+  bmp280CalibrationP2(type: SignalIntTypes.i16l),
+  bmp280CalibrationP3(type: SignalIntTypes.i16l),
+  bmp280CalibrationP4(type: SignalIntTypes.i16l),
+  bmp280CalibrationP5(type: SignalIntTypes.i16l),
+  bmp280CalibrationP6(type: SignalIntTypes.i16l),
+  bmp280CalibrationP7(type: SignalIntTypes.i16l),
+  bmp280CalibrationP8(type: SignalIntTypes.i16l),
+  bmp280CalibrationP9(type: SignalIntTypes.i16l),
+  batteryVoltageResponse(type: SignalIntTypes.u16l, process: ProcessingMethods.batteryVoltage);
 
   final SignalIntTypes type;
   final ProcessingMethods process;
-  final int? byteID;
   final Map<int, dynamic>? valueMap;
   final int? bitShift;
   final int? bitMask;
@@ -806,7 +891,6 @@ enum Signals {
   const Signals({
     this.type = SignalIntTypes.u8,
     this.process = ProcessingMethods.int,
-    this.byteID,
     this.valueMap,
     this.bitShift,
     this.bitMask,
@@ -981,11 +1065,12 @@ double tickSamplingRate(int delayTicks) => 0x8000 / delayTicks;
 // Units: Ohms, Default: 4 - Auto
 const Map<int, int> gsrRangeResistor = {0: 40200, 1: 287000, 2: 1000000, 3: 3300000};
 
-const Map<int, (double, double)> gsrResistanceRange = {
-  0: (8000, 63000),
-  1: (63000, 220000),
-  2: (220000, 680000),
-  3: (680000, 4700000),
+// Units: Ohms, no default value (sensor is set on auto range by default)
+const Map<int, ({double min, double max})> gsrResistanceRange = {
+  0: (min: 8000, max: 63000),
+  1: (min: 63000, max: 220000),
+  2: (min: 220000, max: 680000),
+  3: (min: 680000, max: 4700000),
 };
 
 // Units: bauds per second
@@ -1042,7 +1127,7 @@ const Map<int, double> lsm303AHTRAccelDataRate = {
 const Map<int, String> chargingStatus = {
   0x00: "Not Charging",
   0x40: "Full Charge",
-  0x80: "Conditioning", // No idea what is conditioning, maybe "Charging"?
+  0x80: "Charging", // Original says "Conditioning" I guess they meant "Charging"?
   0xC0: "Bad Battery",
 };
 

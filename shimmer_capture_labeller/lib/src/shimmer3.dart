@@ -16,7 +16,6 @@ const optimizedCalibration = true;
 
 DebugPrintCallback debugPrint = customDebugPrint("Shimmer3", true);
 Mutex _commMutex = Mutex();
-Map<int, MessageCodes> messageCodesDictionary = MessageCodes.asDictionaryMap();
 
 class ResponseFrame {
   final Uint8List packetBytes;
@@ -332,7 +331,7 @@ class SensorData {
         int rawValue = rawData["ADC"] ?? 0;
         var rangeResistorID = (rawValue & 0xC000) >> 14;
         var rangeResistor = gsrRangeResistor[rangeResistorID]!;
-        var (minR, maxR) = gsrResistanceRange[rangeResistorID]!;
+        var resistanceRange = gsrResistanceRange[rangeResistorID]!;
         int adcValue = rawValue & 0x0FFF;
         if (adcValue <= 0) {
           calibratedData["GSRResistance_kOhms"] = 0;
@@ -343,16 +342,15 @@ class SensorData {
           adcValue = range3RawLowerLimit;
         }
         var resistance = rangeResistor / (((adcValue * (3 / 4095)) / 0.5) - 1);
-        if (resistance > maxR) {
-          resistance = maxR;
-        } else if (resistance < minR) {
-          resistance = minR;
+        if (resistance > resistanceRange.max) {
+          resistance = resistanceRange.max;
+        } else if (resistance < resistanceRange.min) {
+          resistance = resistanceRange.min;
         }
         calibratedData["GSRResistance_kOhms"] = resistance / 1000;
         calibratedData["GSRConductance_uS"] = 1 / resistance;
         break;
       case Sensors.battery:
-        const deviceVoltageDropFactor = 1.988;
         int adcValue = rawData["ADC"] ?? 0;
         var voltage = (adcValue * 3 / 4095) * deviceVoltageDropFactor;
         calibratedData["Battery_V"] = voltage;
@@ -471,8 +469,42 @@ class Shimmer3 {
   Map<MessageCodes, List<Signal>> deviceConfiguration = {};
   final ackTimeout = 10;
 
-  // Device Configuration
+  // Device status
+  String chargingStatus = "";
+  double batteryVoltage = 0;
+  bool isStreamingToBluetooth = false;
+  bool isLoggingToSD = false;
+  bool isSensing = false;
+  bool isDocked = false;
+
+  // Device Configuration. Default values from manual and example code.
+  // This data should be updated during device initialization with the device's actual values.
+  DateTime? realWorldClock;
+  IMUCalibrationData analogAccelCalibrationData = IMUDefaultCalibrations.lowNoiseAccelKXTC92050.vectors;
+  IMUCalibrationData wrAccelCalibrationData = IMUDefaultCalibrations.wideRangeAccelLSM303AHTR_2G.vectors;
+  IMUCalibrationData gyroscopeAccelCalibrationData = IMUDefaultCalibrations.gyroscopeMPU910_250DPS.vectors;
+  IMUCalibrationData magnetometerCalibrationData = IMUDefaultCalibrations.magnetometerLSM303AHTR_49Ga.vectors;
+  BMP280CalibrationData bmp280calibrationData = BMP280CalibrationData();
+  double wrAccelRange = lsm303AHTRAccelRange[0] ?? 2.0;
+  double wrAccelDataRate = lsm303AHTRAccelDataRate[4] ?? 100;
+  bool wrAccelLowPower = false;
+  bool wrAccelHighRes = false;
+  int gyroscopeRange = mpu9X50GyroRange[0] ?? 250;
+  double gyroscopeDataRate = 51.28;
+  double magnetometerRange = lsm303AHTRMagRange[0] ?? 49.152;
+  double magnetometerDataRate = lsm303AHTRMagDataRate[3] ?? 100;
+  ({double min, double max}) gsrRange = (
+    min: gsrResistanceRange[0]!.min,
+    max: gsrResistanceRange[3]!.max,
+  ); // setting default resistance range to the whole range
+  String bmp280PressResolution = "";
   int dataBufferSize = 1;
+  List<Signals>? dataSignals;
+  int dataPacketByteSize = 0;
+
+  /// how many samples will be send on each data report during streaming
+  /// only bufferSize = 1 is implemented
+  int bufferSize = 0;
 
   Shimmer3(this.device) {
     _blueClassic = FlutterBlueClassic(usesFineLocation: false);
@@ -648,6 +680,101 @@ class Shimmer3 {
     }
     deviceConfiguration[MessageCodes.deviceVersion] = ResponseFrame(responseData!).data;
 
+    (success, responseData) = await sendCommand(
+      "get battery charging status",
+      MessageCodes.getChargeStatusLED,
+      responseType: MessageCodes.chargeStatusLED,
+    );
+    if (!success) {
+      return false;
+    }
+    var response = ResponseFrame(responseData!).data;
+    deviceConfiguration[MessageCodes.chargeStatusLED] = response;
+    chargingStatus = response.first.text!;
+
+    (success, responseData) = await sendCommand(
+      "get expansion board information",
+      MessageCodes.getExpansionBoardID,
+      responseType: MessageCodes.expansionBoardID,
+    );
+    if (!success) {
+      return false;
+    }
+    deviceConfiguration[MessageCodes.expansionBoardID] = ResponseFrame(responseData!).data;
+
+    (success, responseData) = await sendCommand(
+      "get bluetooth chip version information",
+      MessageCodes.getBluetoothVersionString,
+      responseType: MessageCodes.bluetoothVersionString,
+    );
+    if (!success) {
+      return false;
+    }
+    deviceConfiguration[MessageCodes.bluetoothVersionString] = ResponseFrame(responseData!).data;
+
+    success = await readDeviceStatus();
+    if (!success) {
+      return false;
+    }
+
+    return true;
+  }
+
+  Future<bool> readDeviceStatus() async {
+    var (success, responseData) = await sendCommand(
+      "get device status",
+      MessageCodes.getStatus,
+      responseType: MessageCodes.instreamCommand,
+    );
+    if (!success) {
+      return false;
+    }
+    var statusData = ResponseFrame(responseData!).data;
+
+    /// TODO fix this
+    deviceConfiguration[MessageCodes.status] = statusData;
+    for (var signal in statusData) {
+      switch (signal.type) {
+        case Signals.statusBTStreamResponse:
+          isStreamingToBluetooth = signal.isSet!;
+          break;
+        case Signals.statusSDLogResponse:
+          isLoggingToSD = signal.isSet!;
+          break;
+        case Signals.statusSensingResponse:
+          isSensing = signal.isSet!;
+          break;
+        case Signals.statusDockedResponse:
+          isDocked = signal.isSet!;
+          break;
+        default:
+          break;
+      }
+    }
+    return true;
+  }
+
+  Future<bool> readBatteryState() async {
+    var (success, responseData) = await sendCommand(
+      "get battery state",
+      MessageCodes.getBatteryVoltage,
+      responseType: MessageCodes.instreamCommand,
+    );
+    if (!success) {
+      return false;
+    }
+    var u24bBatteryStateData = ResponseFrame(responseData!).data[0].rawValue!;
+    var blob = ByteData(4);
+    blob.setUint32(0, u24bBatteryStateData, Endian.big); // 0x00, 0xMSB, 0x2SB, 0xLSB
+    List<Signal> data = [];
+    var idx = 1; // skip first byte
+    for (var signal in MessageCodes.batteryVoltage.responseSignals!) {
+      data.add(Signal.fromByteData(signal, blob, idx: idx));
+      idx += signal.type.byteSize;
+    }
+    deviceConfiguration[MessageCodes.batteryVoltage] = data;
+    batteryVoltage = data[0].float!;
+    chargingStatus = data[1].text!;
     return true;
   }
 
@@ -691,7 +818,8 @@ class Shimmer3 {
         return false;
       }
 
-      var shimmer3ClockTicks = DateTime.now().millisecondsSinceEpoch * 32.768;
+      realWorldClock = DateTime.now();
+      var shimmer3ClockTicks = realWorldClock!.millisecondsSinceEpoch * 32.768;
       var byteStream = ByteData(8);
       byteStream.setFloat64(0, shimmer3ClockTicks, Endian.little);
       (success, _) = await sendCommand(
