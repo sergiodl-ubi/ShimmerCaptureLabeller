@@ -228,20 +228,20 @@ enum MessageCodes {
   getAnalogAccelCalibration(0x13),
   // "Gyroscope" sensor
   // Shimmer3 InvenSense Sensor: before 2017-09 MPU9150, after 2017-09 MPU9250
-  setMPU9150GyroRange(0x49),
-  mpu9150GyroRange(0x4A, responseSignals: [Signals.mpu9150GyroRangeResponse]),
-  getMPU9150GyroRange(0x4B),
-  setMPU9150GyroCalibration(0x14),
-  mpu9150GyroCalibration(0x15),
-  getMPU9150GyroCalibration(0x16),
-  setMPU9150SamplingRate(0x4C),
-  mpu9150SamplingRate(0x4D),
-  getMPU9150SamplingRate(0x4E),
-  setMPU9150AccelRange(0x4F),
-  mpu9150AccelRange(0x50),
-  getMPU9150AccelRange(0x51),
-  mpu9150MagSensorADJVals(0x5C),
-  getMPU9150MagSensorADJVals(0x5D),
+  setMPU9X50GyroRange(0x49),
+  mpu9X50GyroRange(0x4A, responseSignals: [Signals.mpu9X50GyroRangeResponse]),
+  getMPU9X50GyroRange(0x4B),
+  setMPU9X50GyroCalibration(0x14),
+  mpu9X50GyroCalibration(0x15),
+  getMPU9X50GyroCalibration(0x16),
+  setMPU9X50SamplingRate(0x4C),
+  mpu9X50SamplingRate(0x4D),
+  getMPU9X50SamplingRate(0x4E),
+  setMPU9X50AccelRange(0x4F),
+  mpu9X50AccelRange(0x50),
+  getMPU9X50AccelRange(0x51),
+  mpu9X50MagSensorADJVals(0x5C),
+  getMPU9X50MagSensorADJVals(0x5D),
   // "GSR" sensor
   setGSRRange(0x21),
   gsrRange(0x22),
@@ -320,6 +320,9 @@ enum MessageCodes {
     }
     return dictionary;
   }
+
+  @override
+  String toString() => name;
 }
 
 enum SignalIntTypes {
@@ -365,11 +368,9 @@ class Signal {
   late String? text;
   late double? float;
   late bool? isSet;
-  late (double, double)? range;
+  late ({double min, double max})? range;
   late (int, List<Signals>)? dataSignals;
   late MessageCodes? messageCode;
-
-  /// (bufferSize, signalsOrder)
   int? rawValue;
 
   Signal(
@@ -390,12 +391,33 @@ class Signal {
     }
   }
 
+  @override
+  String toString() {
+    var stringValues = <String>[];
+    var valuesToCheck = {
+      "Integer": integer,
+      "Text": text,
+      "Double": float,
+      "Boolean": isSet,
+      "ValueRange": range,
+      "DataSignals": dataSignals,
+      "MessageCode": messageCode,
+      "RawValue": rawValue,
+    };
+    for (var entry in valuesToCheck.entries) {
+      if (entry.value != null) {
+        stringValues.add("${entry.key}: ${entry.value}");
+      }
+    }
+    return "($intType) $name signal values: (${stringValues.join(',')})";
+  }
+
   factory Signal.fromByteData(Signals signal, ByteData blob, {int idx = 0}) {
     int? integer, rawValue;
     double? float;
     String? text;
     bool? isSet;
-    (double, double)? range;
+    ({double min, double max})? range;
     (int, List<Signals>)? dataSignals;
     MessageCodes? messageCode;
     switch (signal.process) {
@@ -414,7 +436,7 @@ class Signal {
           case Signals.lsm303AHTRAccelDataRateResponse:
             float = signal.valueMap![mapKey];
             break;
-          case Signals.mpu9150GyroRangeResponse:
+          case Signals.mpu9X50GyroRangeResponse:
           case Signals.bluetoothBaudRateResponse:
             integer = signal.valueMap![mapKey];
             break;
@@ -431,9 +453,13 @@ class Signal {
         var registerValue = rawValue = getIntFromByteData(signal.type, blob, idx: idx);
         var trueValue = (registerValue & signal.bitMask!) >> signal.bitShift!;
         if (signal.valueMap != null) {
+          // Multiple value bit shift with a value mapping
           switch (signal) {
             case Signals.configLSM303AccelRange:
+            case Signals.configLSM303AccelSamplingRate:
             case Signals.configLSM303MagGain:
+            case Signals.configLSM303MagSamplingRate:
+            case Signals.configMPU9X50AccelRange:
               float = signal.valueMap![trueValue];
               break;
             case Signals.configMPU9X50GyroRange:
@@ -450,8 +476,9 @@ class Signal {
               break;
           }
         } else {
-          var bitMaskString = signal.bitMask!.toRadixString(2);
-          var bitsInMask = bitMaskString.split("").fold<int>(0, (acc, char) => char == "1" ? acc + 1 : acc);
+          // Normal bit shift that represents an integer value or a boolean (bit set or unset)
+          var bitMaskInBinary = signal.bitMask!.toRadixString(2);
+          var bitsInMask = bitMaskInBinary.split("").fold<int>(0, (acc, char) => char == "1" ? acc + 1 : acc);
           var isBoolean = bitsInMask == 1;
           if (isBoolean) {
             isSet = trueValue != 0;
@@ -483,11 +510,11 @@ class Signal {
             break;
         }
         break;
-      case ProcessingMethods.gyroSensitivity:
+      case ProcessingMethods.mpuGyroSensitivity:
         rawValue = getIntFromByteData(signal.type, blob, idx: idx);
         float = rawValue / 100;
         break;
-      case ProcessingMethods.gyroDataRate:
+      case ProcessingMethods.mpuGyroDataRate:
         rawValue = getIntFromByteData(signal.type, blob, idx: idx);
         float = 8000 / (rawValue + 1); // Shimmer3 manual is wrong, MPU9250's manual says is +1 not -1
         break;
@@ -519,9 +546,6 @@ class Signal {
       rawValue: rawValue,
     );
   }
-
-  @override
-  String toString() => "($intType) $name signal (${text?.isNotEmpty ?? false ? text : integer})";
 
   static int getIntFromByteData(SignalIntTypes intType, ByteData byteData, {int idx = 0}) {
     switch (intType) {
@@ -666,8 +690,8 @@ enum ProcessingMethods {
   tickSamplingRate,
   bitShift,
   alignMatrix,
-  gyroSensitivity,
-  gyroDataRate,
+  mpuGyroSensitivity,
+  mpuGyroDataRate,
   boolean,
   signalOrder,
   batteryVoltage,
@@ -691,7 +715,7 @@ enum Signals {
   ppgADC(type: SignalIntTypes.u12l, process: ProcessingMethods.adc),
   pressure(type: SignalIntTypes.u16b, process: ProcessingMethods.adc),
   temperature(type: SignalIntTypes.u24b, process: ProcessingMethods.adc),
-  dataTimestamp(type: SignalIntTypes.u24b),
+  dataTimestamp(type: SignalIntTypes.u24l),
   fwVersionIDResponse(type: SignalIntTypes.u16l),
   fwMajorResponse(type: SignalIntTypes.u16l),
   fwMinorResponse,
@@ -726,8 +750,8 @@ enum Signals {
   directoryStringResponse(process: ProcessingMethods.ascii),
   lsm303AHTRAccelRangeResponse(process: ProcessingMethods.valueMap, valueMap: lsm303AHTRAccelRange),
   samplingRateResponse(type: SignalIntTypes.u16l, process: ProcessingMethods.tickSamplingRate),
-  lsm303AHTRMagGainResponse(process: ProcessingMethods.valueMap, valueMap: lsm303AHTRMagRange),
-  mpu9150GyroRangeResponse(process: ProcessingMethods.valueMap, valueMap: mpu9X50GyroRange),
+  lsm303AHTRMagGainResponse(process: ProcessingMethods.valueMap, valueMap: lsm303AHTRMagGain),
+  mpu9X50GyroRangeResponse(process: ProcessingMethods.valueMap, valueMap: mpu9X50GyroRange),
   lsm303AHTRAccelDataRateResponse(process: ProcessingMethods.valueMap, valueMap: lsm303AHTRAccelDataRate),
   analogAccelOffsetX(type: SignalIntTypes.u16b),
   analogAccelOffsetY(type: SignalIntTypes.u16b),
@@ -747,9 +771,9 @@ enum Signals {
   gyroscopeOffsetX(type: SignalIntTypes.u16b),
   gyroscopeOffsetY(type: SignalIntTypes.u16b),
   gyroscopeOffsetZ(type: SignalIntTypes.u16b),
-  gyroscopeSensitivityX(type: SignalIntTypes.u16b, process: ProcessingMethods.gyroSensitivity),
-  gyroscopeSensitivityY(type: SignalIntTypes.u16b, process: ProcessingMethods.gyroSensitivity),
-  gyroscopeSensitivityZ(type: SignalIntTypes.u16b, process: ProcessingMethods.gyroSensitivity),
+  gyroscopeSensitivityX(type: SignalIntTypes.u16b, process: ProcessingMethods.mpuGyroSensitivity),
+  gyroscopeSensitivityY(type: SignalIntTypes.u16b, process: ProcessingMethods.mpuGyroSensitivity),
+  gyroscopeSensitivityZ(type: SignalIntTypes.u16b, process: ProcessingMethods.mpuGyroSensitivity),
   gyroscopeAlignRow1ColA(type: SignalIntTypes.i8, process: ProcessingMethods.alignMatrix),
   gyroscopeAlignRow1ColB(type: SignalIntTypes.i8, process: ProcessingMethods.alignMatrix),
   gyroscopeAlignRow1ColC(type: SignalIntTypes.i8, process: ProcessingMethods.alignMatrix),
@@ -799,6 +823,7 @@ enum Signals {
     process: ProcessingMethods.bitShift,
     bitShift: 4,
     bitMask: 0xF0,
+    valueMap: lsm303AHTRAccelDataRate,
   ),
   configLSM303AccelRange(
     type: SignalIntTypes.noByteShift,
@@ -819,7 +844,7 @@ enum Signals {
     bitShift: 0,
     bitMask: 0x01,
   ),
-  configMPU9X50SamplingRate(process: ProcessingMethods.gyroDataRate),
+  configMPU9X50SamplingRate(process: ProcessingMethods.mpuGyroDataRate),
   configLSM303MagGain(
     type: SignalIntTypes.noByteShift,
     process: ProcessingMethods.bitShift,
@@ -832,6 +857,7 @@ enum Signals {
     process: ProcessingMethods.bitShift,
     bitShift: 2,
     bitMask: 0x1C,
+    valueMap: lsm303AHTRMagDataRate,
   ),
   configMPU9X50GyroRange(
     type: SignalIntTypes.byteShift,
@@ -845,6 +871,7 @@ enum Signals {
     process: ProcessingMethods.bitShift,
     bitShift: 6,
     bitMask: 0xC0,
+    valueMap: mpu9X50AccelRange,
   ),
   configBMPX80PressResolution(
     type: SignalIntTypes.noByteShift,
@@ -895,6 +922,9 @@ enum Signals {
     this.bitShift,
     this.bitMask,
   });
+
+  @override
+  String toString() => name;
 }
 
 const Set imuSensors = {Sensors.lowNoiseAccel, Sensors.wideRangeAccel, Sensors.gyroscope, Sensors.magnetometer};
@@ -1091,6 +1121,9 @@ const Map<int, int> btBaudRate = {
 
 // Units: dps, Default: 0 - ±250dps
 const Map<int, int> mpu9X50GyroRange = {0: 250, 1: 500, 2: 1000, 3: 20000};
+
+// Units: g, Default: 0 - ±2.0g . Got from MPU9250 manual
+const Map<int, double> mpu9X50AccelRange = {0: 2.0, 1: 4.0, 2: 8.0, 3: 16.0};
 
 // Default: 0 - Low pressure resolution
 const Map<int, String> bmpX80PressResolution = {0: "Low", 1: "Standard", 2: "High", 3: "Very High"};

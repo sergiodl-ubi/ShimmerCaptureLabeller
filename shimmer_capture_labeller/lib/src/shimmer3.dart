@@ -58,7 +58,9 @@ class ResponseFrame {
     var blob = ByteData.sublistView(packetBytes, 2);
     var idx = 0;
     for (var signal in responseType.responseSignals!) {
-      data.add(Signal.fromByteData(signal, blob, idx: idx));
+      var newSignal = Signal.fromByteData(signal, blob, idx: idx);
+      debugPrint("Signal processed: $newSignal");
+      data.add(newSignal);
       idx += signal.type.byteSize;
     }
   }
@@ -88,7 +90,10 @@ class DataFrame {
   // Does not accepts an IMUCalibrationData object since new vectors are created
   // on each vector getter call. We want to reuse the same calibration objects
   // for every DataFrame object to avoid wasting memory and cpu cycles.
-  (Vector3, Matrix3, Matrix3)? imuCalibrationData;
+  (Vector3, Matrix3, Matrix3)? analogAccelCalibrationData;
+  (Vector3, Matrix3, Matrix3)? gyroscopeCalibrationData;
+  (Vector3, Matrix3, Matrix3)? magnetometerCalibrationData;
+  (Vector3, Matrix3, Matrix3)? wrAccelCalibrationData;
   BMP280CalibrationData? bmp280calibrationData;
   List<SensorData> sensors = [];
 
@@ -96,15 +101,26 @@ class DataFrame {
     this.enabledSensors,
     this.packetBytes, {
     this.configurationTimestampMs = 0,
-    this.imuCalibrationData,
+    this.analogAccelCalibrationData,
+    this.gyroscopeCalibrationData,
+    this.magnetometerCalibrationData,
+    this.wrAccelCalibrationData,
     this.bmp280calibrationData,
   }) {
     enabledSensors.insert(0, Sensors.dataTimestamp);
     _verify(enabledSensors, packetBytes);
-    if (configurationTimestampMs != 0 || imuCalibrationData != null || bmp280calibrationData != null) {
+    if (configurationTimestampMs != 0 ||
+        analogAccelCalibrationData != null ||
+        gyroscopeCalibrationData != null ||
+        magnetometerCalibrationData != null ||
+        wrAccelCalibrationData != null ||
+        bmp280calibrationData != null) {
       parseDataFrame(
         configTimestampMs: configurationTimestampMs,
-        imuCalibrationData: imuCalibrationData,
+        analogAccelCalibrationData: analogAccelCalibrationData,
+        gyroscopeCalibrationData: gyroscopeCalibrationData,
+        magnetometerCalibrationData: magnetometerCalibrationData,
+        wrAccelCalibrationData: wrAccelCalibrationData,
         bmp280CalibrationData: bmp280calibrationData,
       );
     }
@@ -142,7 +158,10 @@ class DataFrame {
 
   void parseDataFrame({
     int? configTimestampMs,
-    (Vector3, Matrix3, Matrix3)? imuCalibrationData,
+    (Vector3, Matrix3, Matrix3)? analogAccelCalibrationData,
+    (Vector3, Matrix3, Matrix3)? gyroscopeCalibrationData,
+    (Vector3, Matrix3, Matrix3)? magnetometerCalibrationData,
+    (Vector3, Matrix3, Matrix3)? wrAccelCalibrationData,
     BMP280CalibrationData? bmp280CalibrationData,
   }) {
     if (configTimestampMs != null) {
@@ -152,6 +171,23 @@ class DataFrame {
     int endIdx;
     for (var sensor in enabledSensors) {
       endIdx = idx + sensor.getPacketSize();
+      (Vector3, Matrix3, Matrix3)? imuCalibrationData;
+      switch (sensor) {
+        case Sensors.lowNoiseAccel:
+          imuCalibrationData = analogAccelCalibrationData;
+          break;
+        case Sensors.gyroscope:
+          imuCalibrationData = gyroscopeCalibrationData;
+          break;
+        case Sensors.magnetometer:
+          imuCalibrationData = magnetometerCalibrationData;
+          break;
+        case Sensors.wideRangeAccel:
+          imuCalibrationData = wrAccelCalibrationData;
+          break;
+        default:
+          break;
+      }
       var sensorData = SensorData(
         sensor,
         configurationTimestampMs: configurationTimestampMs,
@@ -480,26 +516,27 @@ class Shimmer3 {
   // Device Configuration. Default values from manual and example code.
   // This data should be updated during device initialization with the device's actual values.
   DateTime? realWorldClock;
+  double samplingRate = 0; // Hz
   IMUCalibrationData analogAccelCalibrationData = IMUDefaultCalibrations.lowNoiseAccelKXTC92050.vectors;
-  IMUCalibrationData wrAccelCalibrationData = IMUDefaultCalibrations.wideRangeAccelLSM303AHTR_2G.vectors;
-  IMUCalibrationData gyroscopeAccelCalibrationData = IMUDefaultCalibrations.gyroscopeMPU910_250DPS.vectors;
+  IMUCalibrationData gyroscopeCalibrationData = IMUDefaultCalibrations.gyroscopeMPU910_250DPS.vectors;
   IMUCalibrationData magnetometerCalibrationData = IMUDefaultCalibrations.magnetometerLSM303AHTR_49Ga.vectors;
+  IMUCalibrationData wrAccelCalibrationData = IMUDefaultCalibrations.wideRangeAccelLSM303AHTR_2G.vectors;
   BMP280CalibrationData bmp280calibrationData = BMP280CalibrationData();
   double wrAccelRange = lsm303AHTRAccelRange[0] ?? 2.0;
-  double wrAccelDataRate = lsm303AHTRAccelDataRate[4] ?? 100;
+  double wrAccelDataRate = lsm303AHTRAccelDataRate[4] ?? 100; // Hz
   bool wrAccelLowPower = false;
   bool wrAccelHighRes = false;
-  int gyroscopeRange = mpu9X50GyroRange[0] ?? 250;
+  int gyroscopeRange = mpu9X50GyroRange[0] ?? 250; // dps, Degrees per Second
   double gyroscopeDataRate = 51.28;
-  double magnetometerRange = lsm303AHTRMagRange[0] ?? 49.152;
+  double magnetometerGain = lsm303AHTRMagRange[0] ?? 49.152;
   double magnetometerDataRate = lsm303AHTRMagDataRate[3] ?? 100;
+  double mpuAccelRange = mpu9X50AccelRange[0] ?? 2.0;
   ({double min, double max}) gsrRange = (
     min: gsrResistanceRange[0]!.min,
     max: gsrResistanceRange[3]!.max,
   ); // setting default resistance range to the whole range
-  String bmp280PressResolution = "";
-  int dataBufferSize = 1;
-  List<Signals>? dataSignals;
+  String bmpX80PressResolution = "";
+  List<Signals> dataSignals = [];
   int dataPacketByteSize = 0;
 
   /// how many samples will be send on each data report during streaming
@@ -527,25 +564,36 @@ class Shimmer3 {
       return false;
     }
     _connection = conn;
-    _readSubscription = _connection!.input?.listen((buffer) {
-      if (buffer.isEmpty) {
-        return;
-      }
-      var event = Shimmer3Event(buffer);
-      debugPrint("Packet received: $event");
-      if (event.type == Shimmer3EventTypes.commandAck || event.type == Shimmer3EventTypes.response) {
-        commandReplies.add(event);
-        return;
-      }
-      // Stream out the event
-      _controller.add(event);
-    });
+    _readSubscription = _connection!.input?.listen(packetReceivedHandler);
     return true;
   }
 
   Future<void> disconnect() async {
     _connection?.dispose();
     _readSubscription?.cancel();
+  }
+
+  void packetReceivedHandler(Uint8List buffer) {
+    if (buffer.isEmpty) {
+      return;
+    }
+    var event = Shimmer3Event(buffer);
+    debugPrint("Packet received: $event");
+    switch (event.type) {
+      case Shimmer3EventTypes.commandAck:
+      case Shimmer3EventTypes.response:
+        commandReplies.add(event);
+        break;
+      case Shimmer3EventTypes.data:
+        _controller.add(event);
+        break;
+      case Shimmer3EventTypes.unknown:
+        break;
+    }
+    if (event.type == Shimmer3EventTypes.commandAck || event.type == Shimmer3EventTypes.response) {
+      commandReplies.add(event);
+      return;
+    }
   }
 
   Future<bool> sendData(Uint8List data) async {
@@ -592,6 +640,7 @@ class Shimmer3 {
     if (!success) {
       debugPrint("Failed to $description: ack timeout");
     }
+    debugPrint("RX: $responseData");
     return (success, responseData);
   }
 
@@ -717,9 +766,140 @@ class Shimmer3 {
       return false;
     }
 
+    (success, responseData) = await sendCommand(
+      "get LSM303 accel range",
+      MessageCodes.getLSM303DLHCAccelRange,
+      responseType: MessageCodes.lsm303DLHCAccelRange,
+    );
+    if (!success) {
+      return false;
+    }
+    deviceConfiguration[MessageCodes.lsm303DLHCAccelRange] = ResponseFrame(responseData!).data;
+    wrAccelRange = ResponseFrame(responseData).data[0].float!;
+
+    (success, responseData) = await sendCommand(
+      "get device sampling rate",
+      MessageCodes.getSamplingRate,
+      responseType: MessageCodes.samplingRateResponse,
+    );
+    if (!success) {
+      return false;
+    }
+    deviceConfiguration[MessageCodes.samplingRateResponse] = ResponseFrame(responseData!).data;
+    samplingRate = ResponseFrame(responseData).data[0].float!;
+
+    (success, responseData) = await sendCommand(
+      "get LSM303 Magnetometer Gain",
+      MessageCodes.getLSM303DLHCMagGain,
+      responseType: MessageCodes.lsm303DLHCMagGain,
+    );
+    if (!success) {
+      return false;
+    }
+    deviceConfiguration[MessageCodes.lsm303DLHCMagGain] = ResponseFrame(responseData!).data;
+    magnetometerGain = ResponseFrame(responseData).data[0].float!;
+
+    (success, responseData) = await sendCommand(
+      "get MPU9X50 Gyroscope Range",
+      MessageCodes.getMPU9X50GyroRange,
+      responseType: MessageCodes.mpu9X50GyroRange,
+    );
+    if (!success) {
+      return false;
+    }
+    deviceConfiguration[MessageCodes.mpu9X50GyroRange] = ResponseFrame(responseData!).data;
+    gyroscopeRange = ResponseFrame(responseData).data[0].integer!;
+
+    (success, responseData) = await sendCommand(
+      "get LSM303 Accelerometer Sampling Rate",
+      MessageCodes.getLSM303DLHCAccelSamplingRate,
+      responseType: MessageCodes.lsm303DLHCAccelSamplingRate,
+    );
+    if (!success) {
+      return false;
+    }
+    deviceConfiguration[MessageCodes.lsm303DLHCAccelSamplingRate] = ResponseFrame(responseData!).data;
+    wrAccelDataRate = ResponseFrame(responseData).data[0].float!;
+
+    success = await readAllIMUCalibrationCoefficients();
+    if (!success) {
+      return false;
+    }
+
+    (success, responseData) = await sendCommand(
+      "get expansion board internal power state",
+      MessageCodes.getExpansionBoardInternalPower,
+      responseType: MessageCodes.expansionBoardInternalPower,
+    );
+    if (!success) {
+      return false;
+    }
+    deviceConfiguration[MessageCodes.expansionBoardInternalPower] = ResponseFrame(responseData!).data;
+
+    (success, responseData) = await sendCommand(
+      "get shimmer name",
+      MessageCodes.getShimmerNameString,
+      responseType: MessageCodes.shimmerNameString,
+    );
+    if (!success) {
+      return false;
+    }
+    deviceConfiguration[MessageCodes.shimmerNameString] = ResponseFrame(responseData!).data;
+
+    (success, responseData) = await sendCommand(
+      "get experiment id",
+      MessageCodes.getExperimentIDString,
+      responseType: MessageCodes.experimentIDString,
+    );
+    if (!success) {
+      return false;
+    }
+    deviceConfiguration[MessageCodes.experimentIDString] = ResponseFrame(responseData!).data;
+
+    (success, responseData) = await sendCommand(
+      "get shimmer number",
+      MessageCodes.getShimmerNumber,
+      responseType: MessageCodes.shimmerNumber,
+    );
+    if (!success) {
+      return false;
+    }
+    deviceConfiguration[MessageCodes.shimmerNumber] = ResponseFrame(responseData!).data;
+
+    (success, responseData) = await sendCommand(
+      "get time of last configuration",
+      MessageCodes.getConfigTimestampString,
+      responseType: MessageCodes.configTimestampString,
+    );
+    if (!success) {
+      return false;
+    }
+    deviceConfiguration[MessageCodes.configTimestampString] = ResponseFrame(responseData!).data;
+
+    success = await readDataSignalConfiguration();
+    if (!success) {
+      return false;
+    }
+
+    (success, responseData) = await sendCommand(
+      "get serial bluetooth baud rate",
+      MessageCodes.getBluetoothBaudRate,
+      responseType: MessageCodes.bluetoothBaudRate,
+    );
+    if (!success) {
+      return false;
+    }
+    deviceConfiguration[MessageCodes.bluetoothBaudRate] = ResponseFrame(responseData!).data;
+
+    success = await readBMP280CalibrationCoefficients();
+    if (!success) {
+      return false;
+    }
+
     return true;
   }
 
+  /// Instream capable function
   Future<bool> readDeviceStatus() async {
     var (success, responseData) = await sendCommand(
       "get device status",
@@ -729,31 +909,22 @@ class Shimmer3 {
     if (!success) {
       return false;
     }
-    var statusData = ResponseFrame(responseData!).data;
-
-    /// TODO fix this
-    deviceConfiguration[MessageCodes.status] = statusData;
-    for (var signal in statusData) {
-      switch (signal.type) {
-        case Signals.statusBTStreamResponse:
-          isStreamingToBluetooth = signal.isSet!;
-          break;
-        case Signals.statusSDLogResponse:
-          isLoggingToSD = signal.isSet!;
-          break;
-        case Signals.statusSensingResponse:
-          isSensing = signal.isSet!;
-          break;
-        case Signals.statusDockedResponse:
-          isDocked = signal.isSet!;
-          break;
-        default:
-          break;
-      }
+    var u8Status = ResponseFrame(responseData!).data[0].rawValue!;
+    var blob = ByteData(1);
+    blob.setUint32(0, u8Status);
+    List<Signal> data = [];
+    for (var signal in MessageCodes.status.responseSignals!) {
+      data.add(Signal.fromByteData(signal, blob));
     }
+    deviceConfiguration[MessageCodes.status] = data;
+    isStreamingToBluetooth = data[0].isSet!;
+    isLoggingToSD = data[1].isSet!;
+    isSensing = data[2].isSet!;
+    isDocked = data[3].isSet!;
     return true;
   }
 
+  /// Instream capable function
   Future<bool> readBatteryState() async {
     var (success, responseData) = await sendCommand(
       "get battery state",
@@ -775,6 +946,157 @@ class Shimmer3 {
     deviceConfiguration[MessageCodes.batteryVoltage] = data;
     batteryVoltage = data[0].float!;
     chargingStatus = data[1].text!;
+    return true;
+  }
+
+  Future<bool> readAllIMUCalibrationCoefficients() async {
+    var (success, responseData) = await sendCommand(
+      "get all IMU calibration coefficients",
+      MessageCodes.getAllCalibration,
+      responseType: MessageCodes.allCalibration,
+    );
+    if (!success) {
+      return false;
+    }
+    var signals = ResponseFrame(responseData!).data;
+    deviceConfiguration[MessageCodes.allCalibration] = signals;
+    int2Double(Signal sig) => sig.integer!.toDouble();
+    getDouble(Signal sig) => sig.float!;
+
+    analogAccelCalibrationData = IMUCalibrationData(
+      [int2Double(signals[0]), int2Double(signals[1]), int2Double(signals[2])],
+      [int2Double(signals[3]), 0, 0, 0, int2Double(signals[4]), 0, 0, 0, int2Double(signals[5])],
+      [
+        int2Double(signals[6]),
+        int2Double(signals[7]),
+        int2Double(signals[8]),
+        int2Double(signals[9]),
+        int2Double(signals[10]),
+        int2Double(signals[11]),
+        int2Double(signals[12]),
+        int2Double(signals[13]),
+        int2Double(signals[14]),
+      ],
+    );
+
+    gyroscopeCalibrationData = IMUCalibrationData(
+      [int2Double(signals[15]), int2Double(signals[16]), int2Double(signals[17])],
+      [getDouble(signals[18]), 0, 0, 0, getDouble(signals[19]), 0, 0, 0, getDouble(signals[20])],
+      [
+        int2Double(signals[21]),
+        int2Double(signals[22]),
+        int2Double(signals[23]),
+        int2Double(signals[24]),
+        int2Double(signals[25]),
+        int2Double(signals[26]),
+        int2Double(signals[27]),
+        int2Double(signals[28]),
+        int2Double(signals[29]),
+      ],
+    );
+
+    magnetometerCalibrationData = IMUCalibrationData(
+      [int2Double(signals[30]), int2Double(signals[31]), int2Double(signals[32])],
+      [int2Double(signals[33]), 0, 0, 0, int2Double(signals[34]), 0, 0, 0, int2Double(signals[35])],
+      [
+        int2Double(signals[36]),
+        int2Double(signals[37]),
+        int2Double(signals[38]),
+        int2Double(signals[39]),
+        int2Double(signals[40]),
+        int2Double(signals[41]),
+        int2Double(signals[42]),
+        int2Double(signals[43]),
+        int2Double(signals[44]),
+      ],
+    );
+
+    wrAccelCalibrationData = IMUCalibrationData(
+      [int2Double(signals[45]), int2Double(signals[46]), int2Double(signals[47])],
+      [int2Double(signals[48]), 0, 0, 0, int2Double(signals[49]), 0, 0, 0, int2Double(signals[50])],
+      [
+        int2Double(signals[51]),
+        int2Double(signals[52]),
+        int2Double(signals[53]),
+        int2Double(signals[54]),
+        int2Double(signals[55]),
+        int2Double(signals[56]),
+        int2Double(signals[57]),
+        int2Double(signals[58]),
+        int2Double(signals[59]),
+      ],
+    );
+
+    return true;
+  }
+
+  Future<bool> readBMP280CalibrationCoefficients() async {
+    var (success, responseData) = await sendCommand(
+      "get BMP280 calibration coefficients",
+      MessageCodes.getBMP280CalibrationCoefficients,
+      responseType: MessageCodes.bmp280CalibrationCoefficients,
+    );
+    if (!success) {
+      return false;
+    }
+    var signals = ResponseFrame(responseData!).data;
+    deviceConfiguration[MessageCodes.bmp280CalibrationCoefficients] = signals;
+    bmp280calibrationData = BMP280CalibrationData(
+      t1: signals[0].integer!,
+      t2: signals[0].integer!,
+      t3: signals[0].integer!,
+      p1: signals[0].integer!,
+      p2: signals[0].integer!,
+      p3: signals[0].integer!,
+      p4: signals[0].integer!,
+      p5: signals[0].integer!,
+      p6: signals[0].integer!,
+      p7: signals[0].integer!,
+      p8: signals[0].integer!,
+      p9: signals[0].integer!,
+    );
+    return true;
+  }
+
+  Future<bool> readDataSignalConfiguration() async {
+    var (success, responseData) = await sendCommand(
+      "get data signals configuration",
+      MessageCodes.inquiryCommand,
+      responseType: MessageCodes.inquiryResponse,
+    );
+    if (!success) {
+      return false;
+    }
+    var data = ResponseFrame(responseData!).data;
+    deviceConfiguration[MessageCodes.inquiryResponse] = data;
+    var map = {for (var signal in data) signal.type: signal};
+
+    samplingRate = map[Signals.samplingRateResponse]!.float!;
+    wrAccelDataRate = map[Signals.configLSM303AccelSamplingRate]!.float!;
+    wrAccelRange = map[Signals.configLSM303AccelRange]!.float!;
+    wrAccelLowPower = map[Signals.configLSM303AccelLowPower]!.isSet!;
+    wrAccelHighRes = map[Signals.configLSM303AccelHighRes]!.isSet!;
+    gyroscopeDataRate = map[Signals.configMPU9X50SamplingRate]!.float!;
+    magnetometerGain = map[Signals.configLSM303MagGain]!.float!;
+    magnetometerDataRate = map[Signals.configLSM303MagSamplingRate]!.float!;
+    gyroscopeRange = map[Signals.configMPU9X50GyroRange]!.integer!;
+    mpuAccelRange = map[Signals.configMPU9X50AccelRange]!.float!;
+    bmpX80PressResolution = map[Signals.configBMPX80PressResolution]!.text!;
+    gsrRange = map[Signals.configGSRRange]!.range!;
+    var isSetExpBoardPower = map[Signals.configExpansionBoardInternalPower]!.isSet!;
+    deviceConfiguration[MessageCodes.expansionBoardInternalPower] = [
+      Signal(
+        Signals.expansionBoardInternalPowerResponse,
+        isSet: isSetExpBoardPower,
+        rawValue: isSetExpBoardPower ? 1 : 0,
+      ),
+    ];
+    var (bSize, signalsList) = map[Signals.dataSignalsOrderResponse]!.dataSignals!;
+    bufferSize = bSize;
+    signalsList.insert(0, Signals.dataTimestamp);
+    dataSignals = signalsList;
+    dataPacketByteSize = 1; // Counting in MessageCodes.dataPacket(0x00) length at the first byte position
+    dataPacketByteSize += dataSignals.fold<int>(0, (acc, signal) => signal.type.byteSize + acc);
     return true;
   }
 
@@ -828,6 +1150,12 @@ class Shimmer3 {
         data: byteStream.buffer.asUint8List().toList(),
       );
       if (!success) {
+        return false;
+      }
+
+      success = await getDeviceConfiguration();
+      if (!success) {
+        debugPrint("Failed to get device configuration");
         return false;
       }
 
