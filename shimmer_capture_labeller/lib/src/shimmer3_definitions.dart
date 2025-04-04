@@ -1011,6 +1011,14 @@ class BMP280CalibrationData {
   });
 }
 
+enum ClockMetadata {
+  shimmer3(32768, 16777215);
+
+  final int dataMaxRawValue; // max value of u16, u24, etc
+  final int clockFreq; // in Hz
+  const ClockMetadata(this.clockFreq, this.dataMaxRawValue);
+}
+
 enum IMUDefaultCalibrations {
   lowNoiseAccelKXRB52042(
     IMUCalibrationData([2047, 2047, 2047], [83, 0, 0, 0, 83, 0, 0, 0, 83], [0, -1, 0, -1, 0, 0, 0, 0, -1]),

@@ -81,9 +81,9 @@ class DataFrame {
   final Uint8List packetBytes;
   static const int packetType = 0x00;
   static const int packetTypeLength = 1;
-
-  // Unix timestamp in milliseconds
-  int configurationTimestampMs;
+  static int configurationTimestampMs = 0; // Unix Time at configuration time (with SET_RWC)
+  static int prevTickTimestamp = 0;
+  static int rawTimestampOverflowCounter = 0;
 
   // Calibration Vectors ordered as [offset, sensitivity, alignment]
   //
@@ -100,7 +100,6 @@ class DataFrame {
   DataFrame(
     this.enabledSensors,
     this.packetBytes, {
-    this.configurationTimestampMs = 0,
     this.analogAccelCalibrationData,
     this.gyroscopeCalibrationData,
     this.magnetometerCalibrationData,
@@ -190,7 +189,6 @@ class DataFrame {
       }
       var sensorData = SensorData(
         sensor,
-        configurationTimestampMs: configurationTimestampMs,
         rawBytes: packetBytes.sublist(idx, endIdx),
         imuCalibrationData: imuCalibrationData,
         bmp280Coefficients: bmp280CalibrationData,
@@ -225,17 +223,10 @@ class SensorData {
   Map<String, int> rawData = {};
   Map<String, num> data = {};
   List<Signal> signalData = [];
-  int configurationTimestampMs;
   (Vector3, Matrix3, Matrix3)? imuCalibrationData;
   BMP280CalibrationData? bmp280Coefficients;
 
-  SensorData(
-    this.sensorType, {
-    Uint8List? rawBytes,
-    this.configurationTimestampMs = 0,
-    this.imuCalibrationData,
-    this.bmp280Coefficients,
-  }) {
+  SensorData(this.sensorType, {Uint8List? rawBytes, this.imuCalibrationData, this.bmp280Coefficients}) {
     var dataLoaded = false;
     var dataSize = sensorType.getPacketSize();
 
@@ -342,7 +333,8 @@ class SensorData {
     Map<String, num> calibratedData = {};
     switch (sensorType) {
       case Sensors.dataTimestamp:
-        var timestampMs = (rawData["Timestamp"] ?? 0) + configurationTimestampMs;
+        // Finish this implementation
+        var timestampMs = (rawData["Timestamp"] ?? 0) + DataFrame.configurationTimestampMs;
         calibratedData["Timestamp"] = timestampMs / 1000;
         break;
       case Sensors.lowNoiseAccel:
@@ -516,11 +508,16 @@ class Shimmer3 {
   // Device Configuration. Default values from manual and example code.
   // This data should be updated during device initialization with the device's actual values.
   DateTime? realWorldClock;
+  int rawTimestampValueOverflowCount = 0;
   double samplingRate = 0; // Hz
-  IMUCalibrationData analogAccelCalibrationData = IMUDefaultCalibrations.lowNoiseAccelKXTC92050.vectors;
-  IMUCalibrationData gyroscopeCalibrationData = IMUDefaultCalibrations.gyroscopeMPU910_250DPS.vectors;
-  IMUCalibrationData magnetometerCalibrationData = IMUDefaultCalibrations.magnetometerLSM303AHTR_49Ga.vectors;
-  IMUCalibrationData wrAccelCalibrationData = IMUDefaultCalibrations.wideRangeAccelLSM303AHTR_2G.vectors;
+  // IMUCalibrationData analogAccelCalibrationData = IMUDefaultCalibrations.lowNoiseAccelKXTC92050.vectors;
+  // IMUCalibrationData gyroscopeCalibrationData = IMUDefaultCalibrations.gyroscopeMPU910_250DPS.vectors;
+  // IMUCalibrationData magnetometerCalibrationData = IMUDefaultCalibrations.magnetometerLSM303AHTR_49Ga.vectors;
+  // IMUCalibrationData wrAccelCalibrationData = IMUDefaultCalibrations.wideRangeAccelLSM303AHTR_2G.vectors;
+  (Vector3, Matrix3, Matrix3)? analogAccelCalibrationData;
+  (Vector3, Matrix3, Matrix3)? gyroscopeCalibrationData;
+  (Vector3, Matrix3, Matrix3)? magnetometerCalibrationData;
+  (Vector3, Matrix3, Matrix3)? wrAccelCalibrationData;
   BMP280CalibrationData bmp280calibrationData = BMP280CalibrationData();
   double wrAccelRange = lsm303AHTRAccelRange[0] ?? 2.0;
   double wrAccelDataRate = lsm303AHTRAccelDataRate[4] ?? 100; // Hz
@@ -963,7 +960,7 @@ class Shimmer3 {
     int2Double(Signal sig) => sig.integer!.toDouble();
     getDouble(Signal sig) => sig.float!;
 
-    analogAccelCalibrationData = IMUCalibrationData(
+    var calData = IMUCalibrationData(
       [int2Double(signals[0]), int2Double(signals[1]), int2Double(signals[2])],
       [int2Double(signals[3]), 0, 0, 0, int2Double(signals[4]), 0, 0, 0, int2Double(signals[5])],
       [
@@ -978,8 +975,9 @@ class Shimmer3 {
         int2Double(signals[14]),
       ],
     );
+    analogAccelCalibrationData = (calData.offset, calData.sensitivity, calData.alignment);
 
-    gyroscopeCalibrationData = IMUCalibrationData(
+    calData = IMUCalibrationData(
       [int2Double(signals[15]), int2Double(signals[16]), int2Double(signals[17])],
       [getDouble(signals[18]), 0, 0, 0, getDouble(signals[19]), 0, 0, 0, getDouble(signals[20])],
       [
@@ -994,8 +992,9 @@ class Shimmer3 {
         int2Double(signals[29]),
       ],
     );
+    gyroscopeCalibrationData = (calData.offset, calData.sensitivity, calData.alignment);
 
-    magnetometerCalibrationData = IMUCalibrationData(
+    calData = IMUCalibrationData(
       [int2Double(signals[30]), int2Double(signals[31]), int2Double(signals[32])],
       [int2Double(signals[33]), 0, 0, 0, int2Double(signals[34]), 0, 0, 0, int2Double(signals[35])],
       [
@@ -1010,8 +1009,9 @@ class Shimmer3 {
         int2Double(signals[44]),
       ],
     );
+    magnetometerCalibrationData = (calData.offset, calData.sensitivity, calData.alignment);
 
-    wrAccelCalibrationData = IMUCalibrationData(
+    calData = IMUCalibrationData(
       [int2Double(signals[45]), int2Double(signals[46]), int2Double(signals[47])],
       [int2Double(signals[48]), 0, 0, 0, int2Double(signals[49]), 0, 0, 0, int2Double(signals[50])],
       [
@@ -1026,6 +1026,7 @@ class Shimmer3 {
         int2Double(signals[59]),
       ],
     );
+    wrAccelCalibrationData = (calData.offset, calData.sensitivity, calData.alignment);
 
     return true;
   }
@@ -1141,6 +1142,7 @@ class Shimmer3 {
       }
 
       realWorldClock = DateTime.now();
+      DataFrame.configurationTimestampMs = realWorldClock!.millisecondsSinceEpoch;
       var shimmer3ClockTicks = realWorldClock!.millisecondsSinceEpoch * 32.768;
       var byteStream = ByteData(8);
       byteStream.setFloat64(0, shimmer3ClockTicks, Endian.little);
