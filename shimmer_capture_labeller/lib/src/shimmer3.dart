@@ -81,9 +81,6 @@ class DataFrame {
   final Uint8List packetBytes;
   static const int packetType = 0x00;
   static const int packetTypeLength = 1;
-  static int configurationTimestampMs = 0; // Unix Time at configuration time (with SET_RWC)
-  static int prevTickTimestamp = 0;
-  static int rawTimestampOverflowCounter = 0;
 
   // Calibration Vectors ordered as [offset, sensitivity, alignment]
   //
@@ -108,14 +105,12 @@ class DataFrame {
   }) {
     enabledSensors.insert(0, Sensors.dataTimestamp);
     _verify(enabledSensors, packetBytes);
-    if (configurationTimestampMs != 0 ||
-        analogAccelCalibrationData != null ||
+    if (analogAccelCalibrationData != null ||
         gyroscopeCalibrationData != null ||
         magnetometerCalibrationData != null ||
         wrAccelCalibrationData != null ||
         bmp280calibrationData != null) {
       parseDataFrame(
-        configTimestampMs: configurationTimestampMs,
         analogAccelCalibrationData: analogAccelCalibrationData,
         gyroscopeCalibrationData: gyroscopeCalibrationData,
         magnetometerCalibrationData: magnetometerCalibrationData,
@@ -156,16 +151,12 @@ class DataFrame {
   }
 
   void parseDataFrame({
-    int? configTimestampMs,
     (Vector3, Matrix3, Matrix3)? analogAccelCalibrationData,
     (Vector3, Matrix3, Matrix3)? gyroscopeCalibrationData,
     (Vector3, Matrix3, Matrix3)? magnetometerCalibrationData,
     (Vector3, Matrix3, Matrix3)? wrAccelCalibrationData,
     BMP280CalibrationData? bmp280CalibrationData,
   }) {
-    if (configTimestampMs != null) {
-      configurationTimestampMs = configTimestampMs;
-    }
     var idx = packetTypeLength;
     int endIdx;
     for (var sensor in enabledSensors) {
@@ -225,6 +216,9 @@ class SensorData {
   List<Signal> signalData = [];
   (Vector3, Matrix3, Matrix3)? imuCalibrationData;
   BMP280CalibrationData? bmp280Coefficients;
+  static int configurationTimestampMs = 0; // Unix Time at configuration time (with SET_RWC)
+  static int prevTickTimestamp = 0;
+  static int rawTimestampOverflowCounter = 0;
 
   SensorData(this.sensorType, {Uint8List? rawBytes, this.imuCalibrationData, this.bmp280Coefficients}) {
     var dataLoaded = false;
@@ -325,17 +319,34 @@ class SensorData {
     return calibratedData;
   }
 
+  /// Converts a [rawTimestamp] integer coming from a DataFrame to a timestamp that considers a unsigned 24b that can overflow
+  /// [dataMaxRawValue] is the maximum capacity of the data raw value register, and 1 is added to count for the overflow tick
+  int tickTimestamp(int rawTimestamp) =>
+      rawTimestamp + ((ClockMetadata.shimmer3.dataMaxRawValue + 1) * rawTimestampOverflowCounter);
+
   Map<String, num> calibratedData(
     Map<String, int> rawData, {
     (Vector3, Matrix3, Matrix3)? imuCalibrationData,
     BMP280CalibrationData? bmp280Coefficients,
+    (int configTimestampMs, int prevTickTS, int overflowCounter)? clockMetadata,
   }) {
     Map<String, num> calibratedData = {};
     switch (sensorType) {
       case Sensors.dataTimestamp:
-        // Finish this implementation
-        var timestampMs = (rawData["Timestamp"] ?? 0) + DataFrame.configurationTimestampMs;
-        calibratedData["Timestamp"] = timestampMs / 1000;
+        // A shimmer3 device's timestamp is only a clock tick counter, counting from the last time it was configured
+        // you need to take into account a unsigned 24 bit (3byte) integer overflow and then add the timestamp of
+        // the last time it was configured. In case of power interruption, the clock will reset.
+        var tickTS = tickTimestamp(rawData["Timestamp"] ?? 0);
+        if (prevTickTimestamp > tickTS) {
+          // overflow of timestamp raw value has happened, increase <rawTimestampOverflowCounter> and recalculate
+          rawTimestampOverflowCounter += 1;
+          tickTS = tickTimestamp(rawData["Timestamp"] ?? 0);
+        }
+        prevTickTimestamp = tickTS;
+        // Divide by internal clock freq to get seconds, and convert it into milliseconds
+        var timestampMs = (tickTS / ClockMetadata.shimmer3.clockFreq) * 1000;
+        // Add configurationTimestamp offset in milliseconds
+        calibratedData["Timestamp"] = timestampMs + configurationTimestampMs;
         break;
       case Sensors.lowNoiseAccel:
       case Sensors.wideRangeAccel:
@@ -488,7 +499,8 @@ class Shimmer3Event {
 class Shimmer3 {
   final BluetoothDevice device;
   late FlutterBlueClassic _blueClassic;
-  late StreamController<Shimmer3Event> _controller;
+  late StreamController<DataFrame> _dataStreamer;
+  Uint8List? _dataBuffer;
   BluetoothConnection? _connection;
   bool _streaming = false;
 
@@ -498,6 +510,7 @@ class Shimmer3 {
   final ackTimeout = 10;
 
   // Device status
+  List<Sensors> enabledSensors = [];
   String chargingStatus = "";
   double batteryVoltage = 0;
   bool isStreamingToBluetooth = false;
@@ -542,14 +555,14 @@ class Shimmer3 {
 
   Shimmer3(this.device) {
     _blueClassic = FlutterBlueClassic(usesFineLocation: false);
-    _controller = StreamController<Shimmer3Event>.broadcast();
+    _dataStreamer = StreamController<DataFrame>.broadcast();
   }
 
   bool get isConnected => _connection?.isConnected ?? false;
 
   bool get isStreaming => _streaming;
 
-  Stream<Shimmer3Event> get stream => _controller.stream;
+  Stream<DataFrame> get stream => _dataStreamer.stream;
 
   Future<bool> connect() async {
     if (isConnected) {
@@ -582,7 +595,36 @@ class Shimmer3 {
         commandReplies.add(event);
         break;
       case Shimmer3EventTypes.data:
-        _controller.add(event);
+        var isDataIncomplete = buffer.length != dataPacketByteSize;
+        if (isDataIncomplete && _dataBuffer == null) {
+          // Data sample got split, safe first part for later
+          debugPrint("Data sample split, expected $dataPacketByteSize bytes, saving ${buffer.length} bytes for later.");
+          _dataBuffer = Uint8List.fromList(buffer);
+          break;
+        } else if (isDataIncomplete && _dataBuffer!.length < buffer.length) {
+          _dataBuffer = Uint8List.fromList(_dataBuffer! + buffer);
+          debugPrint("Data buffer added ${buffer.length} bytes. Now is ${_dataBuffer!.length} bytes long.");
+          if (_dataBuffer!.length < dataPacketByteSize) {
+            debugPrint("Not enough data yet (expected total: $dataPacketByteSize)");
+            break;
+          } else if (_dataBuffer!.length == dataPacketByteSize) {
+            debugPrint("DataFrame completing, streaming it out.");
+            _dataStreamer.add(DataFrame(enabledSensors, _dataBuffer!));
+            _dataBuffer = null;
+            break;
+          } else {
+            /// you will arrive here if the dataPacket was split and device's dataBuffer was set over "1"
+            /// (more than one sample per dataPacket). This has not been implemented yet.
+            debugPrint(
+              "Data buffer size (${_dataBuffer!.length}) exceeded expected size ($dataPacketByteSize), "
+              "skipping this DataFrame.",
+            );
+            _dataBuffer = null;
+            break;
+          }
+        } else {
+          _dataStreamer.add(DataFrame(enabledSensors, buffer));
+        }
         break;
       case Shimmer3EventTypes.unknown:
         break;
@@ -700,203 +742,170 @@ class Shimmer3 {
     return acknowledged;
   }
 
+  /// Sends a read configuration command and saves the result into [deviceConfiguration] instance variable
+  ///
+  /// It returns a Record of the following type (bool success, Uint8List? responseData)
+  Future<(bool success, List<Signal> responseSignals)> readConfiguration(
+    MessageCodes command,
+    MessageCodes response,
+    String description,
+  ) async {
+    var (success, responseData) = await sendCommand(description, command, responseType: response);
+    if (!success) {
+      return (false, <Signal>[]);
+    }
+    var responseSignals = ResponseFrame(responseData!).data;
+    deviceConfiguration[response] = responseSignals;
+    return (success, responseSignals);
+  }
+
   Future<bool> getDeviceConfiguration() async {
     bool success = false;
-    Uint8List? responseData;
+    List<Signal> responseSignals;
     flushCommandReplies();
     stopStreaming();
 
-    (success, responseData) = await sendCommand(
-      "get firmware version",
+    (success, responseSignals) = await readConfiguration(
       MessageCodes.getFWVersion,
-      responseType: MessageCodes.fwVersion,
+      MessageCodes.fwVersion,
+      "get firmware version",
     );
-    if (!success) {
-      return false;
-    }
-    deviceConfiguration[MessageCodes.fwVersion] = ResponseFrame(responseData!).data;
+    if (!success) return false;
 
-    (success, responseData) = await sendCommand(
-      "get device version",
+    (success, responseSignals) = await readConfiguration(
       MessageCodes.getDeviceVersion,
-      responseType: MessageCodes.deviceVersion,
+      MessageCodes.deviceVersion,
+      "get device version",
     );
-    if (!success) {
-      return false;
-    }
-    deviceConfiguration[MessageCodes.deviceVersion] = ResponseFrame(responseData!).data;
+    if (!success) return false;
 
-    (success, responseData) = await sendCommand(
-      "get battery charging status",
+    (success, responseSignals) = await readConfiguration(
       MessageCodes.getChargeStatusLED,
-      responseType: MessageCodes.chargeStatusLED,
+      MessageCodes.chargeStatusLED,
+      "get battery charging status",
     );
-    if (!success) {
-      return false;
-    }
-    var response = ResponseFrame(responseData!).data;
-    deviceConfiguration[MessageCodes.chargeStatusLED] = response;
-    chargingStatus = response.first.text!;
+    if (!success) return false;
 
-    (success, responseData) = await sendCommand(
-      "get expansion board information",
+    (success, responseSignals) = await readConfiguration(
+      MessageCodes.getChargeStatusLED,
+      MessageCodes.chargeStatusLED,
+      "get battery charging status",
+    );
+    if (!success) return false;
+    chargingStatus = responseSignals.first.text!;
+
+    (success, responseSignals) = await readConfiguration(
       MessageCodes.getExpansionBoardID,
-      responseType: MessageCodes.expansionBoardID,
+      MessageCodes.expansionBoardID,
+      "get expansion board information",
     );
-    if (!success) {
-      return false;
-    }
-    deviceConfiguration[MessageCodes.expansionBoardID] = ResponseFrame(responseData!).data;
+    if (!success) return false;
 
-    (success, responseData) = await sendCommand(
-      "get bluetooth chip version information",
+    (success, responseSignals) = await readConfiguration(
       MessageCodes.getBluetoothVersionString,
-      responseType: MessageCodes.bluetoothVersionString,
+      MessageCodes.bluetoothVersionString,
+      "get bluetooth chip version information",
     );
-    if (!success) {
-      return false;
-    }
-    deviceConfiguration[MessageCodes.bluetoothVersionString] = ResponseFrame(responseData!).data;
+    if (!success) return false;
 
     success = await readDeviceStatus();
-    if (!success) {
-      return false;
-    }
+    if (!success) return false;
 
-    (success, responseData) = await sendCommand(
-      "get LSM303 accel range",
+    (success, responseSignals) = await readConfiguration(
       MessageCodes.getLSM303DLHCAccelRange,
-      responseType: MessageCodes.lsm303DLHCAccelRange,
+      MessageCodes.lsm303DLHCAccelRange,
+      "get LSM303 accel range",
     );
-    if (!success) {
-      return false;
-    }
-    deviceConfiguration[MessageCodes.lsm303DLHCAccelRange] = ResponseFrame(responseData!).data;
-    wrAccelRange = ResponseFrame(responseData).data[0].float!;
+    if (!success) return false;
+    wrAccelRange = responseSignals.first.float!;
 
-    (success, responseData) = await sendCommand(
-      "get device sampling rate",
+    (success, responseSignals) = await readConfiguration(
       MessageCodes.getSamplingRate,
-      responseType: MessageCodes.samplingRateResponse,
+      MessageCodes.samplingRateResponse,
+      "get device sampling rate",
     );
-    if (!success) {
-      return false;
-    }
-    deviceConfiguration[MessageCodes.samplingRateResponse] = ResponseFrame(responseData!).data;
-    samplingRate = ResponseFrame(responseData).data[0].float!;
+    if (!success) return false;
+    samplingRate = responseSignals.first.float!;
 
-    (success, responseData) = await sendCommand(
-      "get LSM303 Magnetometer Gain",
+    (success, responseSignals) = await readConfiguration(
       MessageCodes.getLSM303DLHCMagGain,
-      responseType: MessageCodes.lsm303DLHCMagGain,
+      MessageCodes.lsm303DLHCMagGain,
+      "get LSM303 Magnetometer Gain",
     );
-    if (!success) {
-      return false;
-    }
-    deviceConfiguration[MessageCodes.lsm303DLHCMagGain] = ResponseFrame(responseData!).data;
-    magnetometerGain = ResponseFrame(responseData).data[0].float!;
+    if (!success) return false;
+    magnetometerGain = responseSignals.first.float!;
 
-    (success, responseData) = await sendCommand(
-      "get MPU9X50 Gyroscope Range",
+    (success, responseSignals) = await readConfiguration(
       MessageCodes.getMPU9X50GyroRange,
-      responseType: MessageCodes.mpu9X50GyroRange,
+      MessageCodes.mpu9X50GyroRange,
+      "get MPU9X50 Gyroscope Range",
     );
-    if (!success) {
-      return false;
-    }
-    deviceConfiguration[MessageCodes.mpu9X50GyroRange] = ResponseFrame(responseData!).data;
-    gyroscopeRange = ResponseFrame(responseData).data[0].integer!;
+    if (!success) return false;
+    gyroscopeRange = responseSignals.first.integer!;
 
-    (success, responseData) = await sendCommand(
-      "get LSM303 Accelerometer Sampling Rate",
+    (success, responseSignals) = await readConfiguration(
       MessageCodes.getLSM303DLHCAccelSamplingRate,
-      responseType: MessageCodes.lsm303DLHCAccelSamplingRate,
+      MessageCodes.lsm303DLHCAccelSamplingRate,
+      "get LSM303 Accelerometer Sampling Rate",
     );
-    if (!success) {
-      return false;
-    }
-    deviceConfiguration[MessageCodes.lsm303DLHCAccelSamplingRate] = ResponseFrame(responseData!).data;
-    wrAccelDataRate = ResponseFrame(responseData).data[0].float!;
+    if (!success) return false;
+    wrAccelDataRate = responseSignals.first.float!;
 
     success = await readAllIMUCalibrationCoefficients();
-    if (!success) {
-      return false;
-    }
+    if (!success) return false;
 
-    (success, responseData) = await sendCommand(
-      "get expansion board internal power state",
+    (success, responseSignals) = await readConfiguration(
       MessageCodes.getExpansionBoardInternalPower,
-      responseType: MessageCodes.expansionBoardInternalPower,
+      MessageCodes.expansionBoardInternalPower,
+      "get expansion board internal power state",
     );
-    if (!success) {
-      return false;
-    }
-    deviceConfiguration[MessageCodes.expansionBoardInternalPower] = ResponseFrame(responseData!).data;
+    if (!success) return false;
 
-    (success, responseData) = await sendCommand(
-      "get shimmer name",
+    (success, responseSignals) = await readConfiguration(
       MessageCodes.getShimmerNameString,
-      responseType: MessageCodes.shimmerNameString,
+      MessageCodes.shimmerNameString,
+      "get shimmer name",
     );
-    if (!success) {
-      return false;
-    }
-    deviceConfiguration[MessageCodes.shimmerNameString] = ResponseFrame(responseData!).data;
+    if (!success) return false;
 
-    (success, responseData) = await sendCommand(
-      "get experiment id",
+    (success, responseSignals) = await readConfiguration(
       MessageCodes.getExperimentIDString,
-      responseType: MessageCodes.experimentIDString,
+      MessageCodes.experimentIDString,
+      "get experiment id",
     );
-    if (!success) {
-      return false;
-    }
-    deviceConfiguration[MessageCodes.experimentIDString] = ResponseFrame(responseData!).data;
+    if (!success) return false;
 
-    (success, responseData) = await sendCommand(
-      "get shimmer number",
+    (success, responseSignals) = await readConfiguration(
       MessageCodes.getShimmerNumber,
-      responseType: MessageCodes.shimmerNumber,
+      MessageCodes.shimmerNumber,
+      "get shimmer number",
     );
-    if (!success) {
-      return false;
-    }
-    deviceConfiguration[MessageCodes.shimmerNumber] = ResponseFrame(responseData!).data;
+    if (!success) return false;
 
-    (success, responseData) = await sendCommand(
-      "get time of last configuration",
+    (success, responseSignals) = await readConfiguration(
       MessageCodes.getConfigTimestampString,
-      responseType: MessageCodes.configTimestampString,
+      MessageCodes.configTimestampString,
+      "get time of last configuration",
     );
-    if (!success) {
-      return false;
-    }
-    deviceConfiguration[MessageCodes.configTimestampString] = ResponseFrame(responseData!).data;
+    if (!success) return false;
 
     success = await readDataSignalConfiguration();
-    if (!success) {
-      return false;
-    }
+    if (!success) return false;
 
-    (success, responseData) = await sendCommand(
-      "get serial bluetooth baud rate",
+    (success, responseSignals) = await readConfiguration(
       MessageCodes.getBluetoothBaudRate,
-      responseType: MessageCodes.bluetoothBaudRate,
+      MessageCodes.bluetoothBaudRate,
+      "get serial bluetooth baud rate",
     );
-    if (!success) {
-      return false;
-    }
-    deviceConfiguration[MessageCodes.bluetoothBaudRate] = ResponseFrame(responseData!).data;
+    if (!success) return false;
 
     success = await readBMP280CalibrationCoefficients();
-    if (!success) {
-      return false;
-    }
+    if (!success) return false;
 
     return true;
   }
 
-  /// Instream capable function
+  /// InStream capable function
   Future<bool> readDeviceStatus() async {
     var (success, responseData) = await sendCommand(
       "get device status",
@@ -921,7 +930,7 @@ class Shimmer3 {
     return true;
   }
 
-  /// Instream capable function
+  /// InStream capable function
   Future<bool> readBatteryState() async {
     var (success, responseData) = await sendCommand(
       "get battery state",
@@ -1110,6 +1119,7 @@ class Shimmer3 {
 
       // Set up sensors
       int configuration = 0;
+      enabledSensors = sensors;
       for (var sensor in sensors) {
         configuration += 1 << sensor.enableBitShift;
       }
@@ -1118,9 +1128,7 @@ class Shimmer3 {
       byte2 = (configuration & 0x000000ff);
 
       (success, _) = await sendCommand("set up sensors", MessageCodes.setSensors, data: [byte0, byte1, byte2]);
-      if (!success) {
-        return false;
-      }
+      if (!success) return false;
 
       // Enable expansion board internal power
       (success, _) = await sendCommand(
@@ -1128,21 +1136,17 @@ class Shimmer3 {
         MessageCodes.setExpansionBoardInternalPower,
         data: [1],
       );
-      if (!success) {
-        return false;
-      }
+      if (!success) return false;
 
       // Set sampling rate
       int clockWait = ((1 << 15) / sampleRate).toInt();
       byte0 = (clockWait & 0x00ff);
       byte1 = (clockWait & 0xff00) >> 8;
       (success, _) = await sendCommand("set up sampling rate", MessageCodes.setSamplingRate, data: [byte0, byte1]);
-      if (!success) {
-        return false;
-      }
+      if (!success) return false;
 
       realWorldClock = DateTime.now();
-      DataFrame.configurationTimestampMs = realWorldClock!.millisecondsSinceEpoch;
+      SensorData.configurationTimestampMs = realWorldClock!.millisecondsSinceEpoch;
       var shimmer3ClockTicks = realWorldClock!.millisecondsSinceEpoch * 32.768;
       var byteStream = ByteData(8);
       byteStream.setFloat64(0, shimmer3ClockTicks, Endian.little);
@@ -1151,9 +1155,7 @@ class Shimmer3 {
         MessageCodes.setUnixTimestampMilliseconds,
         data: byteStream.buffer.asUint8List().toList(),
       );
-      if (!success) {
-        return false;
-      }
+      if (!success) return false;
 
       success = await getDeviceConfiguration();
       if (!success) {

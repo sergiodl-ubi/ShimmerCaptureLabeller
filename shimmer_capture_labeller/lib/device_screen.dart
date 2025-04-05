@@ -70,7 +70,6 @@ class _DeviceScreenState extends State<DeviceScreen> {
     if (!initialized) {
       _showSnackBar("Error starting capture stream");
     }
-    shimmerConfigurationTimestamp = globals.shimmer3!.realWorldClock;
     return initialized;
   }
 
