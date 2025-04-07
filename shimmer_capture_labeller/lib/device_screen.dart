@@ -4,7 +4,6 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_blue_classic/flutter_blue_classic.dart';
 import 'package:shimmer_capture_labeller/src/shimmer3_definitions.dart';
-import 'package:vector_math/vector_math.dart';
 import 'tools/logging.dart';
 import 'tools/globals.dart' as globals;
 import 'src/shimmer3.dart';
@@ -24,12 +23,6 @@ class _DeviceScreenState extends State<DeviceScreen> {
   StreamSubscription? _readSubscription;
   final List<DataFrame> _receivedEvents = [];
   bool successfulSetup = false;
-  int shimmerConfigurationTimestamp = 0;
-  (Vector3, Matrix3, Matrix3)? analogAccelCalibrationData;
-  (Vector3, Matrix3, Matrix3)? gyroscopeCalibrationData;
-  (Vector3, Matrix3, Matrix3)? magnetometerCalibrationData;
-  (Vector3, Matrix3, Matrix3)? wrAccelCalibrationData;
-  BMP280CalibrationData? bmp280calibrationData;
 
   @override
   void initState() {
@@ -52,8 +45,6 @@ class _DeviceScreenState extends State<DeviceScreen> {
       return;
     }
 
-    success = await initializeDevice();
-
     _readSubscription = globals.shimmer3!.stream.listen((event) {
       if (mounted) {
         setState(() => _receivedEvents.add(event));
@@ -74,6 +65,11 @@ class _DeviceScreenState extends State<DeviceScreen> {
   }
 
   Future<bool> startStream() async {
+    var initDevice = await initializeDevice();
+    if (!initDevice) {
+      _showSnackBar("Error getting and setting device parameters");
+    }
+
     var started = await globals.shimmer3!.startStreaming();
     if (!started) {
       _showSnackBar("Error starting capture stream");

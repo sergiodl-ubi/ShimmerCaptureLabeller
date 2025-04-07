@@ -409,7 +409,7 @@ class Signal {
         stringValues.add("${entry.key}: ${entry.value}");
       }
     }
-    return "($intType) $name signal values: (${stringValues.join(',')})";
+    return "($intType) $name signal values: (${stringValues.join(', ')})";
   }
 
   factory Signal.fromByteData(Signals signal, ByteData blob, {int idx = 0}) {
@@ -641,8 +641,10 @@ class Signal {
       );
       length = packetStringLength;
     }
-    var charBuffer = byteData.buffer.asUint8List(1, length);
-    return latin1.decode(charBuffer.toList(), allowInvalid: true);
+    var endingIdx = length + 1; // idx referenced from the original buffer that includes an extra length byte.
+    var charBuffer = Uint8List.sublistView(byteData, 1, endingIdx);
+    debugPrint("Char buffer extracted $charBuffer");
+    return ascii.decode(charBuffer.toList(), allowInvalid: true);
   }
 
   static ByteData getByteDataFromString(String text) {
@@ -753,12 +755,12 @@ enum Signals {
   lsm303AHTRMagGainResponse(process: ProcessingMethods.valueMap, valueMap: lsm303AHTRMagGain),
   mpu9X50GyroRangeResponse(process: ProcessingMethods.valueMap, valueMap: mpu9X50GyroRange),
   lsm303AHTRAccelDataRateResponse(process: ProcessingMethods.valueMap, valueMap: lsm303AHTRAccelDataRate),
-  analogAccelOffsetX(type: SignalIntTypes.u16b),
-  analogAccelOffsetY(type: SignalIntTypes.u16b),
-  analogAccelOffsetZ(type: SignalIntTypes.u16b),
-  analogAccelSensitivityX(type: SignalIntTypes.u16b),
-  analogAccelSensitivityY(type: SignalIntTypes.u16b),
-  analogAccelSensitivityZ(type: SignalIntTypes.u16b),
+  analogAccelOffsetX(type: SignalIntTypes.i16b),
+  analogAccelOffsetY(type: SignalIntTypes.i16b),
+  analogAccelOffsetZ(type: SignalIntTypes.i16b),
+  analogAccelSensitivityX(type: SignalIntTypes.i16b),
+  analogAccelSensitivityY(type: SignalIntTypes.i16b),
+  analogAccelSensitivityZ(type: SignalIntTypes.i16b),
   analogAccelAlignRow1ColA(type: SignalIntTypes.i8, process: ProcessingMethods.alignMatrix),
   analogAccelAlignRow1ColB(type: SignalIntTypes.i8, process: ProcessingMethods.alignMatrix),
   analogAccelAlignRow1ColC(type: SignalIntTypes.i8, process: ProcessingMethods.alignMatrix),
@@ -768,12 +770,12 @@ enum Signals {
   analogAccelAlignRow3ColA(type: SignalIntTypes.i8, process: ProcessingMethods.alignMatrix),
   analogAccelAlignRow3ColB(type: SignalIntTypes.i8, process: ProcessingMethods.alignMatrix),
   analogAccelAlignRow3ColC(type: SignalIntTypes.i8, process: ProcessingMethods.alignMatrix),
-  gyroscopeOffsetX(type: SignalIntTypes.u16b),
-  gyroscopeOffsetY(type: SignalIntTypes.u16b),
-  gyroscopeOffsetZ(type: SignalIntTypes.u16b),
-  gyroscopeSensitivityX(type: SignalIntTypes.u16b, process: ProcessingMethods.mpuGyroSensitivity),
-  gyroscopeSensitivityY(type: SignalIntTypes.u16b, process: ProcessingMethods.mpuGyroSensitivity),
-  gyroscopeSensitivityZ(type: SignalIntTypes.u16b, process: ProcessingMethods.mpuGyroSensitivity),
+  gyroscopeOffsetX(type: SignalIntTypes.i16b),
+  gyroscopeOffsetY(type: SignalIntTypes.i16b),
+  gyroscopeOffsetZ(type: SignalIntTypes.i16b),
+  gyroscopeSensitivityX(type: SignalIntTypes.i16b, process: ProcessingMethods.mpuGyroSensitivity),
+  gyroscopeSensitivityY(type: SignalIntTypes.i16b, process: ProcessingMethods.mpuGyroSensitivity),
+  gyroscopeSensitivityZ(type: SignalIntTypes.i16b, process: ProcessingMethods.mpuGyroSensitivity),
   gyroscopeAlignRow1ColA(type: SignalIntTypes.i8, process: ProcessingMethods.alignMatrix),
   gyroscopeAlignRow1ColB(type: SignalIntTypes.i8, process: ProcessingMethods.alignMatrix),
   gyroscopeAlignRow1ColC(type: SignalIntTypes.i8, process: ProcessingMethods.alignMatrix),
@@ -783,12 +785,12 @@ enum Signals {
   gyroscopeAlignRow3ColA(type: SignalIntTypes.i8, process: ProcessingMethods.alignMatrix),
   gyroscopeAlignRow3ColB(type: SignalIntTypes.i8, process: ProcessingMethods.alignMatrix),
   gyroscopeAlignRow3ColC(type: SignalIntTypes.i8, process: ProcessingMethods.alignMatrix),
-  magnetometerOffsetX(type: SignalIntTypes.u16b),
-  magnetometerOffsetY(type: SignalIntTypes.u16b),
-  magnetometerOffsetZ(type: SignalIntTypes.u16b),
-  magnetometerSensitivityX(type: SignalIntTypes.u16b),
-  magnetometerSensitivityY(type: SignalIntTypes.u16b),
-  magnetometerSensitivityZ(type: SignalIntTypes.u16b),
+  magnetometerOffsetX(type: SignalIntTypes.i16b),
+  magnetometerOffsetY(type: SignalIntTypes.i16b),
+  magnetometerOffsetZ(type: SignalIntTypes.i16b),
+  magnetometerSensitivityX(type: SignalIntTypes.i16b),
+  magnetometerSensitivityY(type: SignalIntTypes.i16b),
+  magnetometerSensitivityZ(type: SignalIntTypes.i16b),
   magnetometerAlignRow1ColA(type: SignalIntTypes.i8, process: ProcessingMethods.alignMatrix),
   magnetometerAlignRow1ColB(type: SignalIntTypes.i8, process: ProcessingMethods.alignMatrix),
   magnetometerAlignRow1ColC(type: SignalIntTypes.i8, process: ProcessingMethods.alignMatrix),
@@ -1109,6 +1111,7 @@ const Map<int, ({double min, double max})> gsrResistanceRange = {
   1: (min: 63000, max: 220000),
   2: (min: 220000, max: 680000),
   3: (min: 680000, max: 4700000),
+  4: (min: 8000, max: 4700000), // auto range: setting at full range
 };
 
 // Units: bauds per second

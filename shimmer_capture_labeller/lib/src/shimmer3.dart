@@ -20,23 +20,20 @@ Mutex _commMutex = Mutex();
 class ResponseFrame {
   final Uint8List packetBytes;
   late MessageCodes responseType;
-  final packetHeaderLength = 2;
+  final packetHeaderLength = 1;
   List<Signal> data = [];
 
   ResponseFrame(this.packetBytes) {
     responseType = _verify(packetBytes);
+    debugPrint("To parse ResponseFrame of type ($responseType) with signals ${responseType.responseSignals}");
     parseDataFrame();
   }
 
   MessageCodes _verify(Uint8List bytes) {
-    if (bytes.length <= 2) {
+    if (bytes.length <= 1) {
       throw ArgumentError("Missing response data");
     }
-    var ackByte = bytes[0];
-    var typeByte = bytes[1];
-    if (ackByte != 0xFF) {
-      throw ArgumentError("Response frame start ($ackByte) is not Ack byte");
-    }
+    var typeByte = bytes[0];
     MessageCodes? type = messageCodesDictionary[typeByte];
     if (type == null) {
       throw ArgumentError("Response type ($typeByte) is not part of [MessageCodes] enum");
@@ -55,7 +52,7 @@ class ResponseFrame {
   }
 
   void parseDataFrame() {
-    var blob = ByteData.sublistView(packetBytes, 2);
+    var blob = ByteData.sublistView(packetBytes, packetHeaderLength);
     var idx = 0;
     for (var signal in responseType.responseSignals!) {
       var newSignal = Signal.fromByteData(signal, blob, idx: idx);
@@ -541,10 +538,7 @@ class Shimmer3 {
   double magnetometerGain = lsm303AHTRMagRange[0] ?? 49.152;
   double magnetometerDataRate = lsm303AHTRMagDataRate[3] ?? 100;
   double mpuAccelRange = mpu9X50AccelRange[0] ?? 2.0;
-  ({double min, double max}) gsrRange = (
-    min: gsrResistanceRange[0]!.min,
-    max: gsrResistanceRange[3]!.max,
-  ); // setting default resistance range to the whole range
+  ({double min, double max}) gsrRange = gsrResistanceRange[4]!;
   String bmpX80PressResolution = "";
   List<Signals> dataSignals = [];
   int dataPacketByteSize = 0;
@@ -679,7 +673,7 @@ class Shimmer3 {
     if (!success) {
       debugPrint("Failed to $description: ack timeout");
     }
-    debugPrint("RX: $responseData");
+    debugPrint("RX: ${responseData ?? 'no extra data'}");
     return (success, responseData);
   }
 
@@ -699,7 +693,7 @@ class Shimmer3 {
           acknowledged = true;
         }
         if (event.type == Shimmer3EventTypes.response && event.responseType! == responseType) {
-          byteData = Uint8List.sublistView(event.message, 2);
+          byteData = Uint8List.sublistView(event.message, 1);
           acknowledged = true;
         }
         if (acknowledged) {
@@ -714,32 +708,6 @@ class Shimmer3 {
       now = DateTime.now().millisecondsSinceEpoch;
     }
     return (acknowledged, byteData);
-  }
-
-  Future<bool> waitForResponse({timeout = 10, reference = ""}) async {
-    var acknowledged = false;
-    var now = DateTime.now().millisecondsSinceEpoch;
-    var expirationTime = now + (timeout * 1000);
-    while (!acknowledged && !(now > expirationTime)) {
-      if (commandReplies.isEmpty) {
-        await Future.delayed(Duration(milliseconds: 50));
-        now = DateTime.now().millisecondsSinceEpoch;
-        continue;
-      }
-      for (final (idx, event) in commandReplies.indexed) {
-        if (MessageCodes.acknowledged.sameAsMessage(event.message)) {
-          acknowledged = true;
-          commandReplies.removeAt(idx);
-          if (reference.isNotEmpty) {
-            debugPrint("Ack received for: $reference");
-          }
-          break;
-        }
-      }
-      await Future.delayed(Duration(milliseconds: 50));
-      now = DateTime.now().millisecondsSinceEpoch;
-    }
-    return acknowledged;
   }
 
   /// Sends a read configuration command and saves the result into [deviceConfiguration] instance variable
@@ -785,21 +753,18 @@ class Shimmer3 {
       "get battery charging status",
     );
     if (!success) return false;
-
-    (success, responseSignals) = await readConfiguration(
-      MessageCodes.getChargeStatusLED,
-      MessageCodes.chargeStatusLED,
-      "get battery charging status",
-    );
-    if (!success) return false;
     chargingStatus = responseSignals.first.text!;
 
-    (success, responseSignals) = await readConfiguration(
-      MessageCodes.getExpansionBoardID,
-      MessageCodes.expansionBoardID,
+    // Weird format for getting information of the expansion board
+    Uint8List? responseData;
+    (success, responseData) = await sendCommand(
       "get expansion board information",
+      MessageCodes.getExpansionBoardID,
+      data: [0x03, 0x00],
+      responseType: MessageCodes.expansionBoardID,
     );
     if (!success) return false;
+    deviceConfiguration[MessageCodes.expansionBoardID] = ResponseFrame(responseData!).data;
 
     (success, responseSignals) = await readConfiguration(
       MessageCodes.getBluetoothVersionString,
@@ -917,11 +882,12 @@ class Shimmer3 {
     }
     var u8Status = ResponseFrame(responseData!).data[0].rawValue!;
     var blob = ByteData(1);
-    blob.setUint32(0, u8Status);
+    blob.setUint8(0, u8Status);
     List<Signal> data = [];
     for (var signal in MessageCodes.status.responseSignals!) {
       data.add(Signal.fromByteData(signal, blob));
     }
+    debugPrint("Device Status processed: $data");
     deviceConfiguration[MessageCodes.status] = data;
     isStreamingToBluetooth = data[0].isSet!;
     isLoggingToSD = data[1].isSet!;
@@ -1145,23 +1111,23 @@ class Shimmer3 {
       (success, _) = await sendCommand("set up sampling rate", MessageCodes.setSamplingRate, data: [byte0, byte1]);
       if (!success) return false;
 
+      success = await getDeviceConfiguration();
+      if (!success) {
+        debugPrint("Failed to get device configuration");
+        return false;
+      }
+
       realWorldClock = DateTime.now();
       SensorData.configurationTimestampMs = realWorldClock!.millisecondsSinceEpoch;
-      var shimmer3ClockTicks = realWorldClock!.millisecondsSinceEpoch * 32.768;
+      var shimmer3ClockTicks = (realWorldClock!.millisecondsSinceEpoch * 32.768).truncate();
       var byteStream = ByteData(8);
-      byteStream.setFloat64(0, shimmer3ClockTicks, Endian.little);
+      byteStream.setUint64(0, shimmer3ClockTicks, Endian.little);
       (success, _) = await sendCommand(
         "set up real world time",
         MessageCodes.setUnixTimestampMilliseconds,
         data: byteStream.buffer.asUint8List().toList(),
       );
       if (!success) return false;
-
-      success = await getDeviceConfiguration();
-      if (!success) {
-        debugPrint("Failed to get device configuration");
-        return false;
-      }
 
       return true;
     });
