@@ -16,6 +16,7 @@ const optimizedCalibration = true;
 
 DebugPrintCallback debugPrint = customDebugPrint("Shimmer3", true);
 Mutex _commMutex = Mutex();
+Mutex _sendCmdMutex = Mutex();
 
 class ResponseFrame {
   final Uint8List packetBytes;
@@ -26,7 +27,7 @@ class ResponseFrame {
   ResponseFrame(this.packetBytes) {
     responseType = _verify(packetBytes);
     debugPrint("To parse ResponseFrame of type ($responseType) with signals ${responseType.responseSignals}");
-    parseDataFrame();
+    parseResponseFrame();
   }
 
   MessageCodes _verify(Uint8List bytes) {
@@ -51,7 +52,7 @@ class ResponseFrame {
     }
   }
 
-  void parseDataFrame() {
+  void parseResponseFrame() {
     var blob = ByteData.sublistView(packetBytes, packetHeaderLength);
     var idx = 0;
     for (var signal in responseType.responseSignals!) {
@@ -66,7 +67,7 @@ class ResponseFrame {
   int get hashCode => Object.hash(responseType, packetBytes);
 
   @override
-  bool operator ==(covariant DataFrame other) {
+  bool operator ==(covariant ResponseFrame other) {
     if (identical(this, other)) return true;
     return listEquals(packetBytes, other.packetBytes);
   }
@@ -74,7 +75,7 @@ class ResponseFrame {
 
 class DataFrame {
   /// in the order as they will appear in [packetBytes]
-  final List<Sensors> enabledSensors;
+  late List<Sensors> enabledSensors;
   final Uint8List packetBytes;
   static const int packetType = 0x00;
   static const int packetTypeLength = 1;
@@ -92,7 +93,7 @@ class DataFrame {
   List<SensorData> sensors = [];
 
   DataFrame(
-    this.enabledSensors,
+    List<Sensors> enabledSensors,
     this.packetBytes, {
     this.analogAccelCalibrationData,
     this.gyroscopeCalibrationData,
@@ -100,8 +101,9 @@ class DataFrame {
     this.wrAccelCalibrationData,
     this.bmp280calibrationData,
   }) {
-    enabledSensors.insert(0, Sensors.dataTimestamp);
-    _verify(enabledSensors, packetBytes);
+    this.enabledSensors = List.from(enabledSensors);
+    this.enabledSensors.insert(0, Sensors.dataTimestamp);
+    _verify(this.enabledSensors, packetBytes);
     if (analogAccelCalibrationData != null ||
         gyroscopeCalibrationData != null ||
         magnetometerCalibrationData != null ||
@@ -128,8 +130,9 @@ class DataFrame {
       validLength += sensor.getPacketSize();
     }
     if (bytes.length != validLength) {
+      var repr = enabledSensors.map((sensor) => "$sensor(${sensor.getPacketSize()})").toList();
       throw ArgumentError(
-        "Provided data packet length (${bytes.length}) does not match with enabled sensors: $enabledSensors",
+        "Provided data packet length (${bytes.length}) does not match with enabled sensors: [ACK, ${repr.join(', ')}]",
       );
     }
     if (bytes[0] != packetType) {
@@ -184,6 +187,7 @@ class DataFrame {
       sensors.add(sensorData);
       idx = endIdx;
     }
+    debugPrint("DataFrame parsed: $this");
   }
 
   @override
@@ -194,6 +198,9 @@ class DataFrame {
     if (identical(this, other)) return true;
     return listEquals(enabledSensors, other.enabledSensors) && listEquals(packetBytes, other.packetBytes);
   }
+
+  @override
+  String toString() => "DataFrame \nraw data: $packetBytes\nparsed data: $sensors";
 }
 
 /// A collection of [Signal]'s data of one of Shimmer3's [Sensors].
@@ -577,6 +584,16 @@ class Shimmer3 {
     _readSubscription?.cancel();
   }
 
+  DataFrame buildDataFrame(Uint8List buffer) => DataFrame(
+    enabledSensors,
+    buffer,
+    analogAccelCalibrationData: analogAccelCalibrationData,
+    gyroscopeCalibrationData: gyroscopeCalibrationData,
+    magnetometerCalibrationData: magnetometerCalibrationData,
+    wrAccelCalibrationData: wrAccelCalibrationData,
+    bmp280calibrationData: bmp280calibrationData,
+  );
+
   void packetReceivedHandler(Uint8List buffer) {
     if (buffer.isEmpty) {
       return;
@@ -602,8 +619,7 @@ class Shimmer3 {
             debugPrint("Not enough data yet (expected total: $dataPacketByteSize)");
             break;
           } else if (_dataBuffer!.length == dataPacketByteSize) {
-            debugPrint("DataFrame completing, streaming it out.");
-            _dataStreamer.add(DataFrame(enabledSensors, _dataBuffer!));
+            _dataStreamer.add(buildDataFrame(_dataBuffer!));
             _dataBuffer = null;
             break;
           } else {
@@ -617,7 +633,7 @@ class Shimmer3 {
             break;
           }
         } else {
-          _dataStreamer.add(DataFrame(enabledSensors, buffer));
+          _dataStreamer.add(buildDataFrame(buffer));
         }
         break;
       case Shimmer3EventTypes.unknown:
@@ -655,26 +671,33 @@ class Shimmer3 {
     List<int>? data,
     MessageCodes? responseType,
   }) async {
-    bool success = false;
-    Uint8List? responseData;
-    var payloadList = [command.value];
-    if (data != null) {
-      payloadList.addAll(data);
-    }
-    var payload = Uint8List.fromList(payloadList);
-    debugPrint("TX $description: $payload");
-    // Send command
-    if (!(await sendData(payload))) {
-      debugPrint("Failed to $description: data not sent");
-      return (false, null);
-    }
-    // wait for acknowledge of command
-    (success, responseData) = await waitForAck(timeout: ackTimeout, reference: description, responseType: responseType);
-    if (!success) {
-      debugPrint("Failed to $description: ack timeout");
-    }
-    debugPrint("RX: ${responseData ?? 'no extra data'}");
-    return (success, responseData);
+    final result = await _sendCmdMutex.protect<(bool, Uint8List?)>(() async {
+      bool success = false;
+      Uint8List? responseData;
+      var payloadList = [command.value];
+      if (data != null) {
+        payloadList.addAll(data);
+      }
+      var payload = Uint8List.fromList(payloadList);
+      debugPrint("TX $description: $payload");
+      // Send command
+      if (!(await sendData(payload))) {
+        debugPrint("Failed to $description: data not sent");
+        return (false, null);
+      }
+      // wait for acknowledge of command
+      (success, responseData) = await waitForAck(
+        timeout: ackTimeout,
+        reference: description,
+        responseType: responseType,
+      );
+      if (!success) {
+        debugPrint("Failed to $description: ack timeout");
+      }
+      debugPrint("RX: ${responseData ?? 'no extra data'}");
+      return (success, responseData);
+    });
+    return result;
   }
 
   Future<(bool, Uint8List?)> waitForAck({timeout = 10, reference = "", MessageCodes? responseType}) async {
@@ -731,7 +754,7 @@ class Shimmer3 {
     bool success = false;
     List<Signal> responseSignals;
     flushCommandReplies();
-    stopStreaming();
+    // await stopStreaming();
 
     (success, responseSignals) = await readConfiguration(
       MessageCodes.getFWVersion,
@@ -1081,7 +1104,7 @@ class Shimmer3 {
       int byte0, byte1, byte2;
       bool success = false;
       flushCommandReplies();
-      stopStreaming();
+      // await stopStreaming();
 
       // Set up sensors
       int configuration = 0;
@@ -1145,13 +1168,11 @@ class Shimmer3 {
   }
 
   Future<bool> stopStreaming() async {
-    return _commMutex.protect<bool>(() async {
-      var (success, _) = await sendCommand("stopping streaming", MessageCodes.stopStreaming);
-      if (!success) {
-        return false;
-      }
-      _streaming = false;
-      return true;
-    });
+    var (success, _) = await sendCommand("stopping streaming", MessageCodes.stopStreaming);
+    if (!success) {
+      return false;
+    }
+    _streaming = false;
+    return true;
   }
 }

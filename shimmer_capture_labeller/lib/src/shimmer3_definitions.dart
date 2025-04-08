@@ -523,7 +523,7 @@ class Signal {
         isSet = rawValue != 0;
         break;
       case ProcessingMethods.signalOrder:
-        dataSignals = getDataSignalsFromByteData(blob);
+        dataSignals = getDataSignalsFromByteData(blob, idx: idx);
         break;
       case ProcessingMethods.batteryVoltage:
         var adcValue = rawValue = getIntFromByteData(signal.type, blob, idx: idx);
@@ -660,12 +660,13 @@ class Signal {
     return b.toBytes().buffer.asByteData();
   }
 
-  static (int, List<Signals>) getDataSignalsFromByteData(ByteData byteData) {
+  static (int, List<Signals>) getDataSignalsFromByteData(ByteData byteData, {int idx = 0}) {
     List<Signals> signalsList = [];
     const headerSize = 2;
-    var length = byteData.getUint8(0);
-    var bufferSize = byteData.getUint8(1);
-    var packetStringLength = byteData.lengthInBytes - headerSize;
+    var length = byteData.getUint8(idx);
+    var bufferSize = byteData.getUint8(idx + 1);
+    var signalsIdx = headerSize + idx;
+    var packetStringLength = byteData.lengthInBytes - signalsIdx;
     if (length > packetStringLength) {
       debugPrint(
         "String length found in idx(0) of response packet ($length) is"
@@ -673,8 +674,8 @@ class Signal {
       );
       length = packetStringLength;
     }
-    for (var idx in Iterable.generate(length)) {
-      var signalID = byteData.getUint8(idx + headerSize);
+    for (int offset in Iterable.generate(length)) {
+      var signalID = byteData.getUint8(signalsIdx + offset);
       signalsList.add(signalsIDDictionary[signalID]!);
     }
     return (bufferSize, signalsList);
@@ -715,8 +716,8 @@ enum Signals {
   gsrADC(type: SignalIntTypes.u16l, process: ProcessingMethods.adc),
   batteryADC(type: SignalIntTypes.u12l, process: ProcessingMethods.adc),
   ppgADC(type: SignalIntTypes.u12l, process: ProcessingMethods.adc),
-  pressure(type: SignalIntTypes.u16b, process: ProcessingMethods.adc),
-  temperature(type: SignalIntTypes.u24b, process: ProcessingMethods.adc),
+  temperature(type: SignalIntTypes.u16b, process: ProcessingMethods.adc),
+  pressure(type: SignalIntTypes.u24b, process: ProcessingMethods.adc),
   dataTimestamp(type: SignalIntTypes.u24l),
   fwVersionIDResponse(type: SignalIntTypes.u16l),
   fwMajorResponse(type: SignalIntTypes.u16l),
@@ -940,7 +941,7 @@ enum Sensors {
   gsr(18, [Signals.gsrADC]),
   battery(13, [Signals.batteryADC]),
   ppg(8, [Signals.ppgADC]),
-  pressureTemp(2, [Signals.pressure, Signals.pressure]);
+  pressureTemp(2, [Signals.temperature, Signals.pressure]);
 
   final int enableBitShift;
   final List<Signals> signals;

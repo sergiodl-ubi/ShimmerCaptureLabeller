@@ -22,6 +22,16 @@ class DeviceScreen extends StatefulWidget {
 class _DeviceScreenState extends State<DeviceScreen> {
   StreamSubscription? _readSubscription;
   final List<DataFrame> _receivedEvents = [];
+  // Analog Accel, Battery, PPG, GSR, Gyro, Magneto, Temp and Press
+  final List<Sensors> _enabledSensors = [
+    Sensors.lowNoiseAccel,
+    Sensors.battery,
+    Sensors.ppg,
+    Sensors.gsr,
+    Sensors.gyroscope,
+    Sensors.magnetometer,
+    Sensors.pressureTemp,
+  ];
   bool successfulSetup = false;
 
   @override
@@ -56,8 +66,7 @@ class _DeviceScreenState extends State<DeviceScreen> {
   }
 
   Future<bool> initializeDevice() async {
-    var enabledSensors = [Sensors.lowNoiseAccel, Sensors.gyroscope, Sensors.gsr, Sensors.ppg];
-    var initialized = await globals.shimmer3!.initialize(enabledSensors);
+    var initialized = await globals.shimmer3!.initialize(_enabledSensors);
     if (!initialized) {
       _showSnackBar("Error starting capture stream");
     }

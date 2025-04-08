@@ -3,4 +3,5 @@
 *.iml
 .gradle
 .DS_Store
+*.cxx
 local.properties
