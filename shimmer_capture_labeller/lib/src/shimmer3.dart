@@ -462,7 +462,7 @@ class SensorData {
           resistance = resistanceRange.min;
         }
         calibratedData["GSRResistance_kOhms"] = resistance / 1000;
-        calibratedData["GSRConductance_uS"] = 1 / resistance;
+        calibratedData["GSRConductance_uS"] = 1 / resistance / 1000;
         break;
       case Sensors.battery:
         int adcValue = rawData["ADC"] ?? 0;
@@ -479,9 +479,9 @@ class SensorData {
         var rawPress = (rawData["Press"] ?? 0) >> 4;
 
         var C = bmp280Coefficients!;
-        var centeredTemp = rawTemp - C.p1;
-        var x1 = centeredTemp * C.p2 >> 10;
-        var x2 = ((centeredTemp * centeredTemp) >> 12) * C.p3 >> 14;
+        var centeredTemp = rawTemp - C.t1;
+        var x1 = centeredTemp * C.t2 >> 10;
+        var x2 = ((centeredTemp * centeredTemp) >> 12) * C.t3 >> 14;
         var tempFine = x1 + x2;
         calibratedData["Temp_C"] = ((tempFine * 5 + 128) >> 8) / 100;
 
@@ -499,7 +499,7 @@ class SensorData {
           var2 = (C.p8 * press) >> 19;
           press = ((press + var1 + var2) >> 8) + (C.p7 << 4);
         }
-        calibratedData["Press_Pa"] = press / 256;
+        calibratedData["Press_kPa"] = press / 256 / 1000;
         break;
     }
     return calibratedData;
@@ -1045,14 +1045,15 @@ class Shimmer3 {
       [int2Double(signals[0]), int2Double(signals[1]), int2Double(signals[2])],
       [int2Double(signals[3]), 0, 0, 0, int2Double(signals[4]), 0, 0, 0, int2Double(signals[5])],
       [
+        // Colum-major order
         int2Double(signals[6]),
-        int2Double(signals[7]),
-        int2Double(signals[8]),
         int2Double(signals[9]),
-        int2Double(signals[10]),
-        int2Double(signals[11]),
         int2Double(signals[12]),
+        int2Double(signals[7]),
+        int2Double(signals[10]),
         int2Double(signals[13]),
+        int2Double(signals[8]),
+        int2Double(signals[11]),
         int2Double(signals[14]),
       ],
     );
@@ -1062,14 +1063,15 @@ class Shimmer3 {
       [int2Double(signals[15]), int2Double(signals[16]), int2Double(signals[17])],
       [getDouble(signals[18]), 0, 0, 0, getDouble(signals[19]), 0, 0, 0, getDouble(signals[20])],
       [
+        // Colum-major order
         int2Double(signals[21]),
-        int2Double(signals[22]),
-        int2Double(signals[23]),
         int2Double(signals[24]),
-        int2Double(signals[25]),
-        int2Double(signals[26]),
         int2Double(signals[27]),
+        int2Double(signals[22]),
+        int2Double(signals[25]),
         int2Double(signals[28]),
+        int2Double(signals[23]),
+        int2Double(signals[26]),
         int2Double(signals[29]),
       ],
     );
@@ -1079,14 +1081,15 @@ class Shimmer3 {
       [int2Double(signals[30]), int2Double(signals[31]), int2Double(signals[32])],
       [int2Double(signals[33]), 0, 0, 0, int2Double(signals[34]), 0, 0, 0, int2Double(signals[35])],
       [
+        // Colum-major order
         int2Double(signals[36]),
-        int2Double(signals[37]),
-        int2Double(signals[38]),
         int2Double(signals[39]),
-        int2Double(signals[40]),
-        int2Double(signals[41]),
         int2Double(signals[42]),
+        int2Double(signals[37]),
+        int2Double(signals[40]),
         int2Double(signals[43]),
+        int2Double(signals[38]),
+        int2Double(signals[41]),
         int2Double(signals[44]),
       ],
     );
@@ -1096,14 +1099,15 @@ class Shimmer3 {
       [int2Double(signals[45]), int2Double(signals[46]), int2Double(signals[47])],
       [int2Double(signals[48]), 0, 0, 0, int2Double(signals[49]), 0, 0, 0, int2Double(signals[50])],
       [
+        // Colum-major order
         int2Double(signals[51]),
-        int2Double(signals[52]),
-        int2Double(signals[53]),
         int2Double(signals[54]),
-        int2Double(signals[55]),
-        int2Double(signals[56]),
         int2Double(signals[57]),
+        int2Double(signals[52]),
+        int2Double(signals[55]),
         int2Double(signals[58]),
+        int2Double(signals[53]),
+        int2Double(signals[56]),
         int2Double(signals[59]),
       ],
     );
@@ -1125,17 +1129,17 @@ class Shimmer3 {
     deviceConfiguration[MessageCodes.bmp280CalibrationCoefficients] = signals;
     bmp280calibrationData = BMP280CalibrationData(
       t1: signals[0].integer!,
-      t2: signals[0].integer!,
-      t3: signals[0].integer!,
-      p1: signals[0].integer!,
-      p2: signals[0].integer!,
-      p3: signals[0].integer!,
-      p4: signals[0].integer!,
-      p5: signals[0].integer!,
-      p6: signals[0].integer!,
-      p7: signals[0].integer!,
-      p8: signals[0].integer!,
-      p9: signals[0].integer!,
+      t2: signals[1].integer!,
+      t3: signals[2].integer!,
+      p1: signals[3].integer!,
+      p2: signals[4].integer!,
+      p3: signals[5].integer!,
+      p4: signals[6].integer!,
+      p5: signals[7].integer!,
+      p6: signals[8].integer!,
+      p7: signals[9].integer!,
+      p8: signals[10].integer!,
+      p9: signals[11].integer!,
     );
     return true;
   }
