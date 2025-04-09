@@ -277,12 +277,82 @@ class SensorData {
     }
   }
 
+  ByteData paddedByteList(SignalIntTypes type, Uint8List dataPacket) {
+    switch (type) {
+      case SignalIntTypes.i24l:
+      case SignalIntTypes.u24l:
+        var isNegative = ((dataPacket[2] & 0x80) >> 7) == 1;
+        var value = (dataPacket[2] << 16) + (dataPacket[1] << 8) + dataPacket[0];
+        var buffer = ByteData(4);
+        if (type == SignalIntTypes.i24l && isNegative) {
+          buffer.setInt32(0, value.toSigned(24), Endian.little);
+        } else {
+          buffer.setUint32(0, value, Endian.little);
+        }
+        return buffer;
+      case SignalIntTypes.i24b:
+      case SignalIntTypes.u24b:
+        var isNegative = ((dataPacket[0] & 0x80) >> 7) == 1;
+        var value = (dataPacket[0] << 16) + (dataPacket[1] << 8) + dataPacket[2];
+        var buffer = ByteData(4);
+        if (type == SignalIntTypes.i24b && isNegative) {
+          buffer.setInt32(0, value.toSigned(24), Endian.big);
+        } else {
+          buffer.setUint32(0, value, Endian.big);
+        }
+        return buffer;
+      default:
+        return ByteData.sublistView(dataPacket);
+    }
+  }
+
   Map<String, int> parsedDataPacket(Uint8List dataPacket) {
     Map<String, int> parsedData = {};
     var idx = 0;
-    var blob = ByteData.sublistView(dataPacket);
+    debugPrint("Parsing $dataPacket of $sensorType");
     for (var signal in sensorType.signals) {
-      parsedData[signal.name] = Signal.getIntFromByteData(signal.type, blob, idx: idx);
+      var blob = paddedByteList(signal.type, Uint8List.sublistView(dataPacket, idx, idx + signal.type.byteSize));
+      String attributeName = "";
+      switch (signal) {
+        case Signals.dataTimestamp:
+          attributeName = "Timestamp";
+          break;
+        case Signals.lowNoiseAccelX:
+        case Signals.wideRangeAccelX:
+        case Signals.gyroscopeX:
+        case Signals.magnetometerX:
+          attributeName = "X";
+          break;
+        case Signals.lowNoiseAccelY:
+        case Signals.wideRangeAccelY:
+        case Signals.gyroscopeY:
+        case Signals.magnetometerY:
+          attributeName = "Y";
+          break;
+        case Signals.lowNoiseAccelZ:
+        case Signals.wideRangeAccelZ:
+        case Signals.gyroscopeZ:
+        case Signals.magnetometerZ:
+          attributeName = "Z";
+          break;
+        case Signals.gsrADC:
+        case Signals.batteryADC:
+        case Signals.ppgADC:
+          attributeName = "ADC";
+          break;
+        case Signals.temperature:
+          attributeName = "Temp";
+          break;
+        case Signals.pressure:
+          attributeName = "Press";
+          break;
+        default:
+          attributeName = "unknown";
+          break;
+      }
+      debugPrint("Checking idx: $idx for ${signal.name} with length ${signal.type.byteSize}");
+      parsedData[attributeName] = Signal.getIntFromByteData(signal.type, blob);
+      debugPrint("Parsed signal: ${parsedData[attributeName]}");
       idx += signal.type.byteSize;
     }
     return parsedData;
@@ -335,6 +405,7 @@ class SensorData {
     (int configTimestampMs, int prevTickTS, int overflowCounter)? clockMetadata,
   }) {
     Map<String, num> calibratedData = {};
+    debugPrint("Calibration, rawValue: $rawData");
     switch (sensorType) {
       case Sensors.dataTimestamp:
         // A shimmer3 device's timestamp is only a clock tick counter, counting from the last time it was configured
@@ -569,12 +640,20 @@ class Shimmer3 {
     if (isConnected) {
       return true;
     }
-    var conn = await _blueClassic.connect(device.address);
-    if (conn == null) {
-      debugPrint("Failed to connect to $device");
+    var connectionError = "";
+    try {
+      var conn = await _blueClassic.connect(device.address);
+      if (conn == null) {
+        connectionError = "Failed to connect to $device";
+        debugPrint(connectionError);
+        return false;
+      }
+      _connection = conn;
+    } catch (error) {
+      connectionError = error.toString();
+      debugPrint(connectionError);
       return false;
     }
-    _connection = conn;
     _readSubscription = _connection!.input?.listen(packetReceivedHandler);
     return true;
   }
@@ -599,7 +678,10 @@ class Shimmer3 {
       return;
     }
     var event = Shimmer3Event(buffer);
-    debugPrint("Packet received: $event");
+    if (event.type == Shimmer3EventTypes.unknown && _dataBuffer != null && _dataBuffer!.length < dataPacketByteSize) {
+      // We have an incomplete dataPacket in [_dataBuffer], this packet is most likely the continuation
+      event.type = Shimmer3EventTypes.data;
+    }
     switch (event.type) {
       case Shimmer3EventTypes.commandAck:
       case Shimmer3EventTypes.response:
@@ -612,13 +694,14 @@ class Shimmer3 {
           debugPrint("Data sample split, expected $dataPacketByteSize bytes, saving ${buffer.length} bytes for later.");
           _dataBuffer = Uint8List.fromList(buffer);
           break;
-        } else if (isDataIncomplete && _dataBuffer!.length < buffer.length) {
+        } else if (isDataIncomplete && _dataBuffer!.length < dataPacketByteSize) {
           _dataBuffer = Uint8List.fromList(_dataBuffer! + buffer);
           debugPrint("Data buffer added ${buffer.length} bytes. Now is ${_dataBuffer!.length} bytes long.");
           if (_dataBuffer!.length < dataPacketByteSize) {
             debugPrint("Not enough data yet (expected total: $dataPacketByteSize)");
             break;
           } else if (_dataBuffer!.length == dataPacketByteSize) {
+            debugPrint("Data buffer completed, creating DataFrame with: $_dataBuffer");
             _dataStreamer.add(buildDataFrame(_dataBuffer!));
             _dataBuffer = null;
             break;
